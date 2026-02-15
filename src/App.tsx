@@ -1,0 +1,348 @@
+import { useState, useEffect } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import "./App.css";
+
+// ── SF Symbols İkon Bileşenleri ──
+
+const SFIcon = ({ children, size = 20, className = "" }: { children: React.ReactNode; size?: number; className?: string }) => (
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width={size} height={size} className={`sf-icon ${className}`}>
+    {children}
+  </svg>
+);
+
+const MicIcon = ({ size = 20, className = "" }) => (
+  <SFIcon size={size} className={className}>
+    <path transform="matrix(0.80, 0, 0, 0.80, 2.43, 19.40)" d="M11.95-5.39C14.29-5.39 15.86-7.14 15.86-9.63L15.86-17.47C15.86-19.98 14.29-21.71 11.95-21.71C9.61-21.71 8.04-19.98 8.04-17.47L8.04-9.63C8.04-7.14 9.61-5.39 11.95-5.39ZM6.71 3.25L17.18 3.25C17.67 3.25 18.07 2.86 18.07 2.37C18.07 1.88 17.67 1.48 17.18 1.48L12.83 1.48L12.83-1.27C17.33-1.63 20.33-4.86 20.33-9.45L20.33-11.82C20.33-12.32 19.95-12.70 19.45-12.70C18.96-12.70 18.56-12.32 18.56-11.82L18.56-9.52C18.56-5.52 15.96-2.87 11.95-2.87C7.93-2.87 5.33-5.52 5.33-9.52L5.33-11.82C5.33-12.32 4.95-12.70 4.44-12.70C3.95-12.70 3.56-12.32 3.56-11.82L3.56-9.45C3.56-4.86 6.56-1.63 11.06-1.27L11.06 1.48L6.71 1.48C6.22 1.48 5.82 1.88 5.82 2.37C5.82 2.86 6.22 3.25 6.71 3.25Z" fill="currentColor" />
+  </SFIcon>
+);
+
+const WaveformIcon = ({ size = 20, className = "" }) => (
+  <SFIcon size={size} className={className}>
+    <path transform="matrix(0.82, 0, 0, 0.82, 0.74, 18.91)" d="M11.80 3.79C12.34 3.79 12.76 3.36 12.76 2.84L12.76-19.75C12.76-20.27 12.34-20.70 11.80-20.70C11.27-20.70 10.88-20.27 10.88-19.75L10.88 2.84C10.88 3.36 11.27 3.79 11.80 3.79ZM19.70 1.18C20.23 1.18 20.64 0.76 20.64 0.25L20.64-17.16C20.64-17.67 20.23-18.11 19.70-18.11C19.15-18.11 18.75-17.67 18.75-17.16L18.75 0.25C18.75 0.76 19.15 1.18 19.70 1.18ZM7.86-0.94C8.40-0.94 8.81-1.36 8.81-1.89L8.81-15.02C8.81-15.55 8.40-15.98 7.86-15.98C7.34-15.98 6.93-15.55 6.93-15.02L6.93-1.89C6.93-1.36 7.34-0.94 7.86-0.94ZM15.75-2.37C16.29-2.37 16.70-2.78 16.70-3.30L16.70-13.61C16.70-14.13 16.29-14.55 15.75-14.55C15.21-14.55 14.81-14.13 14.81-13.61L14.81-3.30C14.81-2.78 15.21-2.37 15.75-2.37ZM23.64-4.72C24.16-4.72 24.59-5.14 24.59-5.66L24.59-11.25C24.59-11.77 24.16-12.20 23.64-12.20C23.10-12.20 22.70-11.77 22.70-11.25L22.70-5.66C22.70-5.14 23.10-4.72 23.64-4.72ZM3.91-5.73C4.46-5.73 4.88-6.15 4.88-6.68L4.88-10.23C4.88-10.76 4.46-11.19 3.91-11.19C3.39-11.19 2.99-10.76 2.99-10.23L2.99-6.68C2.99-6.15 3.39-5.73 3.91-5.73Z" fill="currentColor" />
+  </SFIcon>
+);
+
+const GlobeIcon = ({ size = 20, className = "" }) => (
+  <SFIcon size={size} className={className}>
+    <path transform="matrix(0.84, 0, 0, 0.84, 0.25, 19.08)" d="M14.05 3.49C20.65 3.49 26.00-1.86 26.00-8.46C26.00-15.06 20.65-20.41 14.05-20.41C7.45-20.41 2.10-15.06 2.10-8.46C2.10-1.86 7.45 3.49 14.05 3.49ZM7.02-16.07C8.20-17.16 9.63-17.98 11.23-18.43C10.42-17.61 9.73-16.44 9.20-15.01C8.36-15.28 7.63-15.63 7.02-16.07ZM16.88-18.43C18.47-17.98 19.90-17.16 21.08-16.07C20.47-15.63 19.75-15.28 18.90-15.01C18.38-16.44 17.68-17.61 16.88-18.43ZM10.71-14.63C11.37-16.42 12.28-17.71 13.29-18.15L13.29-14.36C12.36-14.39 11.51-14.48 10.71-14.63ZM14.82-18.15C15.82-17.71 16.73-16.42 17.39-14.63C16.59-14.48 15.74-14.39 14.82-14.36ZM3.71-9.23C3.88-11.39 4.70-13.36 5.98-14.95C6.68-14.40 7.63-13.93 8.75-13.58C8.41-12.27 8.20-10.80 8.14-9.23ZM19.96-9.23C19.90-10.80 19.69-12.27 19.35-13.58C20.47-13.93 21.42-14.40 22.13-14.95C23.40-13.36 24.22-11.39 24.39-9.23ZM9.71-9.23C9.77-10.64 9.97-11.99 10.28-13.18C11.21-12.98 12.22-12.87 13.29-12.82L13.29-9.23ZM14.82-9.23L14.82-12.82C15.88-12.87 16.90-12.98 17.84-13.18C18.13-11.99 18.33-10.64 18.39-9.23ZM3.71-7.70L8.14-7.70C8.20-6.09 8.41-4.61 8.77-3.29C7.65-2.93 6.71-2.47 6.01-1.93C4.71-3.53 3.88-5.52 3.71-7.70ZM9.71-7.70L13.29-7.70L13.29-4.04C12.23-4.01 11.21-3.88 10.29-3.69C9.97-4.91 9.76-6.27 9.71-7.70ZM14.82-4.04L14.82-7.70L18.39-7.70C18.34-6.27 18.13-4.91 17.81-3.69C16.89-3.88 15.88-4.01 14.82-4.04ZM19.35-3.29C19.69-4.61 19.90-6.09 19.96-7.70L24.39-7.70C24.22-5.52 23.39-3.53 22.10-1.93C21.40-2.47 20.45-2.93 19.35-3.29ZM14.82-2.51C15.73-2.47 16.58-2.39 17.37-2.24C16.71-0.48 15.81 0.80 14.82 1.24ZM10.73-2.24C11.52-2.39 12.38-2.47 13.29-2.51L13.29 1.24C12.29 0.80 11.39-0.49 10.73-2.24ZM18.89-1.86C19.72-1.59 20.45-1.24 21.05-0.82C19.88 0.25 18.46 1.05 16.89 1.50C17.68 0.69 18.38-0.46 18.89-1.86ZM7.05-0.82C7.65-1.24 8.38-1.59 9.21-1.86C9.73-0.46 10.42 0.69 11.21 1.50C9.64 1.05 8.23 0.25 7.05-0.82Z" fill="currentColor" />
+  </SFIcon>
+);
+
+const GearIcon = ({ size = 20, className = "" }) => (
+  <SFIcon size={size} className={className}>
+    <path transform="matrix(0.82, 0, 0, 0.82, 0.29, 18.91)" d="M13.27 3.79L15.42 3.79C16.03 3.79 16.46 3.42 16.61 2.82L17.21 0.25C17.67 0.09 18.12-0.08 18.50-0.27L20.77 1.11C21.27 1.43 21.84 1.38 22.27 0.96L23.78-0.54C24.20-0.96 24.26-1.57 23.92-2.07L22.54-4.31C22.73-4.72 22.91-5.14 23.04-5.57L25.64-6.19C26.24-6.33 26.59-6.76 26.59-7.37L26.59-9.49C26.59-10.09 26.24-10.52 25.64-10.66L23.06-11.29C22.91-11.77 22.72-12.20 22.56-12.56L23.94-14.84C24.26-15.35 24.23-15.90 23.80-16.34L22.27-17.85C21.83-18.25 21.30-18.34 20.80-18.02L18.50-16.61C18.13-16.80 17.70-16.98 17.21-17.13L16.61-19.75C16.46-20.34 16.03-20.71 15.42-20.71L13.27-20.71C12.66-20.71 12.22-20.34 12.07-19.75L11.46-17.16C11.00-17.00 10.56-16.83 10.16-16.62L7.89-18.02C7.38-18.34 6.83-18.27 6.41-17.85L4.89-16.34C4.45-15.90 4.42-15.35 4.75-14.84L6.12-12.56C5.96-12.20 5.78-11.77 5.63-11.29L3.05-10.66C2.45-10.52 2.10-10.09 2.10-9.49L2.10-7.37C2.10-6.76 2.45-6.33 3.05-6.19L5.65-5.57C5.78-5.14 5.95-4.72 6.14-4.31L4.77-2.07C4.42-1.57 4.49-0.96 4.91-0.54L6.41 0.96C6.83 1.38 7.42 1.43 7.92 1.11L10.17-0.27C10.57-0.08 11.00 0.09 11.46 0.25L12.07 2.82C12.22 3.42 12.66 3.79 13.27 3.79ZM14.34-4.32C12.06-4.32 10.21-6.18 10.21-8.46C10.21-10.75 12.06-12.60 14.34-12.60C16.63-12.60 18.48-10.75 18.48-8.46C18.48-6.18 16.63-4.32 14.34-4.32Z" fill="currentColor" />
+  </SFIcon>
+);
+
+const LeafIcon = ({ size = 20, className = "" }) => (
+  <SFIcon size={size} className={className}>
+    <path transform="matrix(0.79, 0, 0, 0.79, 0.34, 18.39)" d="M2.44-18.15C2.19-16.96 2.10-15.40 2.10-14.36C2.10-5.59 7.31 0.20 15.28 0.20C19.24 0.20 21.60-1.61 22.70-2.88C23.68-1.54 24.25-0.05 24.87 1.90C25.04 2.46 25.43 2.66 25.84 2.66C26.71 2.66 27.40 1.91 27.40 0.88C27.40-0.74 25.08-3.55 23.87-4.69C18.74-9.42 10.92-6.62 8.91-11.85C8.75-12.25 9.18-12.60 9.56-12.20C13.61-8.16 18.81-11.57 23.87-6.90C24.27-6.55 24.74-6.74 24.81-7.16C24.87-7.50 24.90-8.04 24.90-8.55C24.90-14.27 20.92-17.03 15.32-17.03C13.44-17.03 11.25-16.57 9.53-16.57C7.64-16.57 5.52-16.72 3.83-18.53C3.35-19.02 2.63-18.95 2.44-18.15Z" fill="currentColor" />
+  </SFIcon>
+);
+
+const CommandIcon = ({ size = 20, className = "" }) => (
+  <SFIcon size={size} className={className}>
+    <path transform="matrix(0.90, 0, 0, 0.90, -0.70, 19.67)" d="M7.17 2.55C9.48 2.55 11.36 0.68 11.36-1.64L11.36-4.01L16.76-4.01L16.76-1.64C16.76 0.68 18.63 2.55 20.94 2.55C23.25 2.55 25.13 0.68 25.13-1.64C25.13-3.96 23.25-5.78 20.94-5.78L18.59-5.78L18.59-11.19L20.94-11.19C23.25-11.19 25.13-13.01 25.13-15.33C25.13-17.65 23.25-19.54 20.94-19.54C18.63-19.54 16.76-17.65 16.76-15.33L16.76-12.96L11.36-12.96L11.36-15.33C11.36-17.65 9.48-19.54 7.17-19.54C4.86-19.54 2.99-17.65 2.99-15.33C2.99-13.01 4.86-11.19 7.17-11.19L9.53-11.19L9.53-5.78L7.17-5.78C4.86-5.78 2.99-3.96 2.99-1.64C2.99 0.68 4.86 2.55 7.17 2.55ZM7.17-12.96C5.88-12.96 4.82-14.03 4.82-15.33C4.82-16.63 5.88-17.71 7.17-17.71C8.46-17.71 9.53-16.63 9.53-15.33L9.53-12.96ZM20.94-17.71C22.23-17.71 23.30-16.63 23.30-15.33C23.30-14.03 22.23-12.96 20.94-12.96L18.59-12.96L18.59-15.33C18.59-16.63 19.65-17.71 20.94-17.71ZM11.36-5.78L11.36-11.19L16.76-11.19L16.76-5.78ZM4.82-1.64C4.82-2.94 5.88-4.01 7.17-4.01L9.53-4.01L9.53-1.64C9.53-0.34 8.46 0.73 7.17 0.73C5.88 0.73 4.82-0.34 4.82-1.64ZM18.59-1.64L18.59-4.01L20.94-4.01C22.23-4.01 23.30-2.94 23.30-1.64C23.30-0.34 22.23 0.73 20.94 0.73C19.65 0.73 18.59-0.34 18.59-1.64Z" fill="currentColor" />
+  </SFIcon>
+);
+
+// ── Tipler ──
+
+interface MillowConfig {
+  api_key: string;
+  proxy_endpoint: string;
+  model: string;
+  default_language: string;
+  translation_enabled: boolean;
+  translation_target: string;
+  commands_enabled: boolean;
+  wakeword_enabled: boolean;
+  wakeword: string;
+  wakeword_stop: string;
+  hotkey: string;
+  sample_rate: number;
+  // P1-P7
+  ai_editing: boolean;
+  format_commands: boolean;
+  custom_dictionary: string[];
+  hold_to_talk: boolean;
+  writing_style: string;
+  whisper_mode: boolean;
+  groq_api_key: string | null;
+}
+
+type AppMode = "dictation" | "translate" | "command";
+type AppStatus = "idle" | "recording" | "processing";
+
+// ── Ana Uygulama ──
+
+function App() {
+  const [status, setStatus] = useState<AppStatus>("idle");
+  const [mode, setMode] = useState<AppMode>("dictation");
+  const [lastText, setLastText] = useState("");
+  const [config, setConfig] = useState<MillowConfig | null>(null);
+  const [showSettings, setShowSettings] = useState(false);
+  const [notification, setNotification] = useState("");
+  const [dictInput, setDictInput] = useState(""); // custom dictionary textarea
+
+  useEffect(() => {
+    invoke<MillowConfig>("get_config").then((c) => {
+      setConfig(c);
+      setDictInput((c.custom_dictionary || []).join("\n"));
+    });
+  }, []);
+
+  useEffect(() => {
+    const unlisten1 = listen("toggle-recording", async () => {
+      if (status === "recording") {
+        await stopRecording();
+      } else {
+        await startRecording();
+      }
+    });
+
+    const unlisten2 = listen<string>("set-mode", (event) => {
+      const newMode = event.payload as AppMode;
+      setMode(newMode);
+      invoke("set_mode", { mode: newMode });
+    });
+
+    return () => {
+      unlisten1.then((fn) => fn());
+      unlisten2.then((fn) => fn());
+    };
+  }, [status]);
+
+  const modeConfig: Record<AppMode, { label: string; icon: React.ReactNode; desc: string }> = {
+    dictation: { label: "Dikte", icon: <MicIcon size={16} />, desc: "Konuşmanız düzenlenip metne dönüştürülür" },
+    translate: { label: "Çeviri", icon: <GlobeIcon size={16} />, desc: "Konuşmanız çevrilir" },
+    command: { label: "Komut", icon: <CommandIcon size={16} />, desc: "Sesli komut çalıştırır" },
+  };
+
+  const showNotif = (msg: string) => {
+    setNotification(msg);
+    setTimeout(() => setNotification(""), 2500);
+  };
+
+  const startRecording = async () => {
+    try {
+      await invoke("start_recording");
+      setStatus("recording");
+    } catch (e) {
+      showNotif(`Hata: ${e}`);
+    }
+  };
+
+  const stopRecording = async () => {
+    setStatus("processing");
+    try {
+      const result = await invoke<any>("stop_and_transcribe");
+      setLastText(result.text || "");
+      showNotif(result.result_type === "command" ? `Komut: ${result.action}` : "Yazıldı");
+    } catch (e) {
+      showNotif(`Hata: ${e}`);
+    }
+    setStatus("idle");
+  };
+
+  const updateConfig = (partial: Partial<MillowConfig>) => {
+    if (config) setConfig({ ...config, ...partial });
+  };
+
+  const saveSettings = async () => {
+    if (config) {
+      // Dictionary textarea → array
+      const dict = dictInput.split("\n").map((s) => s.trim()).filter((s) => s.length > 0);
+      const finalConfig = { ...config, custom_dictionary: dict };
+      // Kısayol değiştiyse runtime'da da güncelle
+      if (config.hotkey !== finalConfig.hotkey) {
+        try {
+          await invoke("change_hotkey", { newHotkey: finalConfig.hotkey });
+        } catch (e) {
+          showNotif("Kısayol hatası: " + e);
+          return;
+        }
+      }
+      await invoke("save_config", { newConfig: finalConfig });
+      setConfig(finalConfig);
+      showNotif("Ayarlar kaydedildi");
+      setShowSettings(false);
+    }
+  };
+
+  if (showSettings && config) {
+    return (
+      <div className="window">
+        <div className="toolbar">
+          <button className="toolbar-btn back" onClick={() => setShowSettings(false)}>
+            ‹ Geri
+          </button>
+          <span className="toolbar-title">Ayarlar</span>
+          <button className="toolbar-btn primary" onClick={saveSettings}>
+            Kaydet
+          </button>
+        </div>
+
+        <div className="settings-scroll">
+          {/* API */}
+          <div className="settings-group">
+            <div className="settings-group-title">API Ayarları</div>
+            <label className="setting-row">
+              <span>Groq API Key</span>
+              <input type="password" value={config.groq_api_key || ""} onChange={(e) => updateConfig({ groq_api_key: e.target.value || null })} placeholder="gsk_..." />
+            </label>
+          </div>
+
+          {/* Sözlük */}
+          <div className="settings-group">
+            <div className="settings-group-title">Özel Sözlük</div>
+            <div className="setting-row dictionary">
+              <textarea
+                value={dictInput}
+                onChange={(e) => setDictInput(e.target.value)}
+                placeholder={"Her satira bir kelime yazin: Tereza, Nietzsche..."}
+                rows={4}
+              />
+            </div>
+          </div>
+
+          {/* Dil */}
+          <div className="settings-group">
+            <div className="settings-group-title">Dil</div>
+            <label className="setting-row">
+              <span>Varsayılan</span>
+              <select value={config.default_language} onChange={(e) => updateConfig({ default_language: e.target.value })}>
+                <option value="tr">Türkçe</option>
+                <option value="en">English</option>
+              </select>
+            </label>
+            <label className="setting-row">
+              <span>Çeviri Hedef</span>
+              <select value={config.translation_target} onChange={(e) => updateConfig({ translation_target: e.target.value })}>
+                <option value="en">English</option>
+                <option value="tr">Türkçe</option>
+                <option value="de">Deutsch</option>
+                <option value="fr">Français</option>
+                <option value="es">Español</option>
+              </select>
+            </label>
+          </div>
+
+          {/* Etkileşim */}
+          <div className="settings-group">
+            <div className="settings-group-title">Etkileşim</div>
+            <label className="setting-row">
+              <span>Kısayol Tuşu</span>
+              <select value={config.hotkey} onChange={(e) => updateConfig({ hotkey: e.target.value })}>
+                <option value="Alt+Space">⌥ Space</option>
+                <option value="Ctrl+Space">⌃ Space</option>
+                <option value="Shift+Space">⇧ Space</option>
+                <option value="Ctrl+Alt+Space">⌃⌥ Space</option>
+                <option value="Cmd+Shift+Space">⌘⇧ Space</option>
+                <option value="F5">F5</option>
+                <option value="F6">F6</option>
+                <option value="F7">F7</option>
+                <option value="F8">F8</option>
+              </select>
+            </label>
+            <label className="setting-row toggle">
+              <span>Basılı Tutma Modu</span>
+              <input type="checkbox" checked={config.hold_to_talk} onChange={(e) => updateConfig({ hold_to_talk: e.target.checked })} />
+            </label>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="window">
+      {/* Araç Çubuğu */}
+      <div className="toolbar">
+        <div className="toolbar-leading">
+          <LeafIcon size={16} className="leaf-icon" />
+          <span className="toolbar-title">Millow</span>
+        </div>
+        <button className="toolbar-btn icon" onClick={() => setShowSettings(true)}>
+          <GearIcon size={15} />
+        </button>
+      </div>
+
+      {/* Bildirim */}
+      {notification && <div className="notif">{notification}</div>}
+
+      <div className="content">
+        {/* Durum Alanı */}
+        <div className={`status-area ${status}`}>
+          <div className="status-orb-wrap">
+            <div className={`status-orb ${status}`}>
+              {status === "recording" ? <WaveformIcon size={32} className="orb-icon" /> : <MicIcon size={32} className="orb-icon" />}
+            </div>
+          </div>
+          <div className="status-label">
+            {status === "idle" && "Hazır"}
+            {status === "recording" && "Dinliyor…"}
+            {status === "processing" && "İşleniyor…"}
+          </div>
+          <div className="status-hint">
+            {status === "idle" && (config?.hold_to_talk ? "⌥ Space basılı tutun" : "⌥ Space veya \"Millow\" deyin")}
+            {status === "recording" && (config?.hold_to_talk ? "Konuşun, bırakınca durdurulur" : "Konuşun, bitince tekrar basın")}
+            {status === "processing" && "Transkript ediliyor"}
+          </div>
+        </div>
+
+        {/* Kayıt Düğmesi */}
+        <button
+          className={`record-btn ${status}`}
+          onClick={status === "recording" ? stopRecording : startRecording}
+          disabled={status === "processing"}
+        >
+          <MicIcon size={18} />
+          <span>{status === "recording" ? "Durdur" : "Kayıt Başlat"}</span>
+        </button>
+
+        {/* Mod Seçici */}
+        <div className="segmented-control">
+          {(Object.keys(modeConfig) as AppMode[]).map((m) => (
+            <button
+              key={m}
+              className={`segment ${mode === m ? "active" : ""}`}
+              onClick={() => { setMode(m); invoke("set_mode", { mode: m }); }}
+            >
+              {modeConfig[m].icon}
+              <span>{modeConfig[m].label}</span>
+            </button>
+          ))}
+        </div>
+        <p className="mode-desc">{modeConfig[mode].desc}</p>
+
+        {/* Aktif Özellikler Rozeti */}
+        <div className="feature-badges">
+          {config?.ai_editing && <span className="badge">AI Düzenleme</span>}
+          {config?.format_commands && <span className="badge">Formatlama</span>}
+          {config?.whisper_mode && <span className="badge">Fısıltı</span>}
+          {config?.hold_to_talk && <span className="badge">Basılı Tut</span>}
+          {(config?.custom_dictionary?.length ?? 0) > 0 && <span className="badge">Sözlük ({config?.custom_dictionary.length})</span>}
+        </div>
+
+        {/* Son Çıktı */}
+        {lastText && (
+          <div className="output-card">
+            <div className="output-header">Son Çıktı</div>
+            <p className="output-text">{lastText}</p>
+          </div>
+        )}
+      </div>
+
+      {/* Alt Bilgi */}
+      <div className="footer-bar">
+        <span className="shortcut-badge">{config?.hotkey || "⌥ Space"}</span>
+        <span className="footer-sep">·</span>
+        <span className="footer-text">{config?.hold_to_talk ? "Basılı Tut" : "Dikte"}</span>
+      </div>
+    </div>
+  );
+}
+
+export default App;

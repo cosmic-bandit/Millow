@@ -1,0 +1,51 @@
+[package]
+name = "millow-app"
+version = "0.1.0"
+description = "Millow — macOS Sesli Yazdırma Uygulaması"
+authors = ["Mehmet Üstün"]
+edition = "2021"
+
+[lib]
+name = "millow_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-opener = "2"
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-notification = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Ses yakalama
+cpal = "0.15"
+
+# Tuş enjeksiyonu
+enigo = { version = "0.2", features = ["serde"] }
+
+# HTTP istemci (Gemini API)
+reqwest = { version = "0.12", features = ["json", "blocking", "multipart"] }
+
+# Ses dosyası
+hound = "3.5"
+
+# Base64 kodlama
+base64 = "0.22"
+
+# Async çalışma zamanı
+tokio = { version = "1", features = ["full"] }
+
+# Kilitleme ve paylaşımlı durum
+parking_lot = "0.12"
+
+# Düşük seviyeli klavye dinleme (Fn tuşu için)
+rdev = "0.5"
+# macOS CGEvent ile tuş simülasyonu
+core-graphics = "0.24"
+
+# macOS Dock gizleme (NSApplication activation policy)
+cocoa = "0.26"
+objc = "0.2"
