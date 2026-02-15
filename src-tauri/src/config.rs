@@ -72,10 +72,65 @@ pub struct MillowConfig {
     /// Mac açılınca otomatik başlat
     #[serde(default)]
     pub auto_launch: bool,
+
+    // ── Ses & Sessizlik Ayarları ──
+    /// Ortam gürültüsü toleransı (0.01-0.50, varsayılan 0.15)
+    #[serde(default = "default_noise_tolerance")]
+    pub noise_tolerance: f32,
+
+    /// Segment flush sessizlik süresi (saniye, varsayılan 1.5)
+    #[serde(default = "default_silence_duration")]
+    pub silence_duration: f32,
+
+    /// Otomatik kapanma süresi (saniye, varsayılan 30)
+    #[serde(default = "default_auto_stop_duration")]
+    pub auto_stop_duration: f32,
+
+    /// Segment flush sonrası satır sonu ekle
+    #[serde(default)]
+    pub newline_after_segment: bool,
+
+    // ── Hallucination Filtresi ──
+    /// Filtrelenen kelimeler/cümleler listesi
+    #[serde(default = "default_hallucinations")]
+    pub hallucination_filters: Vec<String>,
 }
 
 fn default_true() -> bool {
     true
+}
+
+fn default_noise_tolerance() -> f32 {
+    0.15
+}
+
+fn default_silence_duration() -> f32 {
+    1.5
+}
+
+fn default_auto_stop_duration() -> f32 {
+    30.0
+}
+
+fn default_hallucinations() -> Vec<String> {
+    vec![
+        "Altyazı M.K.".into(), "altyazı m.k.".into(), "Altyazı M.K".into(),
+        "Alt yazı M.K.".into(), "Altyazılar M.K.".into(),
+        "Altyazı".into(), "Alt yazı".into(),
+        "Subtitles by".into(), "Sottotitoli".into(),
+        "Thank you.".into(), "Thanks for watching.".into(),
+        "Thank you for watching.".into(),
+        "you".into(), "You".into(),
+        "...".into(), "…".into(),
+        "Teşekkürler.".into(), "Teşekkür ederim.".into(),
+        "İyi seyirler.".into(),
+        "İzlediğiniz için teşekkür ederim.".into(),
+        "İzlediğiniz için teşekkürler.".into(),
+        "Dinlediğiniz için teşekkürler.".into(),
+        "Abone olmayı unutmayın.".into(),
+        "Beğenmeyi ve abone olmayı unutmayın.".into(),
+        "Please subscribe.".into(),
+    ]
 }
 
 fn default_style() -> String {
@@ -105,6 +160,11 @@ impl Default for MillowConfig {
             whisper_mode: false,
             groq_api_key: None,
             auto_launch: false,
+            noise_tolerance: 0.15,
+            silence_duration: 1.5,
+            auto_stop_duration: 30.0,
+            newline_after_segment: false,
+            hallucination_filters: default_hallucinations(),
         }
     }
 }

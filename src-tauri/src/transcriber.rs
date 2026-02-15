@@ -176,26 +176,9 @@ impl GeminiTranscriber {
 
         let raw_text = groq_resp.text.unwrap_or_default().trim().to_string();
         
-        // Whisper hallucination filtresi — sessizlikte üretilen sahte metinler
-        let hallucinations = [
-            "Altyazı M.K.", "altyazı m.k.", "Altyazı M.K",
-            "Alt yazı M.K.", "Altyazılar M.K.",
-            "Altyazı", "Alt yazı",
-            "Subtitles by", "Sottotitoli",
-            "Thank you.", "Thanks for watching.",
-            "you", "You",
-            "...", "…",
-            "Teşekkürler.", "Teşekkür ederim.",
-            "İyi seyirler.",
-            "İzlediğiniz için teşekkür ederim.",
-            "İzlediğiniz için teşekkürler.",
-            "Dinlediğiniz için teşekkürler.",
-            "Abone olmayı unutmayın.",
-            "Beğenmeyi ve abone olmayı unutmayın.",
-            "Thank you for watching.",
-            "Thanks for watching.",
-            "Please subscribe.",
-        ];
+        // Whisper hallucination filtresi — configx27den oku
+        let cfg_h = crate::config::MillowConfig::load().hallucination_filters;
+        let hallucinations: Vec<&str> = cfg_h.iter().map(|s| s.as_str()).collect();
         // Tam eşleşme → tamamen boşalt
         let text = if hallucinations.iter().any(|h| raw_text == *h) || raw_text.len() < 3 {
             println!("🚫 Whisper hallucination filtrelendi: [{}]", raw_text);

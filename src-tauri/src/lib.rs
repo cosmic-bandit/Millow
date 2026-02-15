@@ -158,10 +158,17 @@ pub fn flush_segment(state: Arc<AppState>) {
             Ok(result) => {
                 println!("📝 Segment sonuç ({:.1}s): {:?}", t_start.elapsed().as_secs_f64(), result);
                 if !result.text.is_empty() {
+                    let cfg = state_proc.config.lock().clone();
+                    let final_text = if cfg.newline_after_segment {
+                        format!("{}
+", result.text)
+                    } else {
+                        result.text.clone()
+                    };
                     match typer::AutoTyper::new() {
                         Ok(t) => {
                             let src_app = state_proc.source_app.lock().clone();
-                            if let Err(e) = t.type_text_to_app(&result.text, src_app.as_deref()) {
+                            if let Err(e) = t.type_text_to_app(&final_text, src_app.as_deref()) {
                                 println!("❌ Segment yazma hatası: {}", e);
                             } else {
                                 println!("✅ Segment yazıldı: {}", result.text);
@@ -320,9 +327,12 @@ pub fn toggle_recording(state: Arc<AppState>) {
                 println!("🎙️  Kayıt başladı!");
                 std::thread::spawn(|| { notify("🎙️ Kayıt", "3s susunca yazar, 30s susunca kapanır"); });
                 
-                // Watchdog: 3s sessizlik → segment flush, 30s → kapat
+                // Watchdog: sessizlik → segment flush, uzun sessizlik → kapat
                 let state_wd = Arc::clone(&state);
                 std::thread::spawn(move || {
+                    let cfg = state_wd.config.lock().clone();
+                    let flush_threshold = cfg.silence_duration as f64;
+                    let stop_threshold = cfg.auto_stop_duration as f64;
                     let mut total_silence: f64 = 0.0;
                     let mut had_voice = false;
                     let mut segment_flushed = false;
@@ -341,16 +351,16 @@ pub fn toggle_recording(state: Arc<AppState>) {
                             total_silence = silence_secs;
                         }
                         
-                        if had_voice && !segment_flushed && silence_secs >= 1.5 {
-                            println!("📝 3s sessizlik — segment flush");
+                        if had_voice && !segment_flushed && silence_secs >= flush_threshold {
+                            println!("📝 {:.1}s sessizlik — segment flush", flush_threshold);
                             flush_segment(Arc::clone(&state_wd));
                             segment_flushed = true;
                             had_voice = false;
                         }
                         
-                        if total_silence >= 30.0 {
-                            println!("🔇 30s sessizlik — otomatik durdurma");
-                            notify("🔇 Sessizlik", "30s ses gelmedi, durduruldu");
+                        if total_silence >= stop_threshold {
+                            println!("🔇 {:.0}s sessizlik — otomatik durdurma", stop_threshold);
+                            notify("🔇 Sessizlik", &format!("{:.0}s ses gelmedi, durduruldu", stop_threshold));
                             toggle_recording(Arc::clone(&state_wd));
                             break;
                         }
@@ -813,6 +823,9 @@ pub fn run() {
                                                 // Watchdog: 3s sessizlik → segment flush, 30s → kapat
                                                 let state_wd = Arc::clone(&state_start);
                                                 std::thread::spawn(move || {
+                                                    let cfg = state_wd.config.lock().clone();
+                                                    let flush_threshold = cfg.silence_duration as f64;
+                                                    let stop_threshold = cfg.auto_stop_duration as f64;
                                                     let mut total_silence: f64 = 0.0;
                                                     let mut had_voice = false; // Hiç konuşma oldu mu
                                                     let mut segment_flushed = false; // Bu segment flush edildi mi
@@ -834,7 +847,7 @@ pub fn run() {
                                                         
                                                         // 3s sessizlik + konuşma olduysa → segment flush
 
-                                                        if had_voice && !segment_flushed && silence_secs >= 1.5 {
+                                                        if had_voice && !segment_flushed && silence_secs >= flush_threshold {
                                                             println!("📝 3s sessizlik — segment flush");
                                                             flush_segment(Arc::clone(&state_wd));
                                                             segment_flushed = true;
@@ -842,9 +855,9 @@ pub fn run() {
                                                         }
                                                         
                                                         // 30s toplam sessizlik → tamamen kapat
-                                                        if total_silence >= 30.0 {
-                                                            println!("🔇 30s sessizlik — otomatik durdurma");
-                                                            notify("🔇 Sessizlik", "30s ses gelmedi, durduruldu");
+                                                        if total_silence >= stop_threshold {
+                                                            println!("🔇 {:.0}s sessizlik — otomatik durdurma", stop_threshold);
+                                                            notify("🔇 Sessizlik", &format!("{:.0}s ses gelmedi, durduruldu", stop_threshold));
                                                             toggle_recording(Arc::clone(&state_wd));
                                                             break;
                                                         }

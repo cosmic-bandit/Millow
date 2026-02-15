@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import "./App.css";
+import appIcon from "./assets/icon-32.png";
 
 // ── SF Symbols İkon Bileşenleri ──
 
@@ -35,12 +36,6 @@ const GearIcon = ({ size = 20, className = "" }) => (
   </SFIcon>
 );
 
-const LeafIcon = ({ size = 20, className = "" }) => (
-  <SFIcon size={size} className={className}>
-    <path transform="matrix(0.79, 0, 0, 0.79, 0.34, 18.39)" d="M2.44-18.15C2.19-16.96 2.10-15.40 2.10-14.36C2.10-5.59 7.31 0.20 15.28 0.20C19.24 0.20 21.60-1.61 22.70-2.88C23.68-1.54 24.25-0.05 24.87 1.90C25.04 2.46 25.43 2.66 25.84 2.66C26.71 2.66 27.40 1.91 27.40 0.88C27.40-0.74 25.08-3.55 23.87-4.69C18.74-9.42 10.92-6.62 8.91-11.85C8.75-12.25 9.18-12.60 9.56-12.20C13.61-8.16 18.81-11.57 23.87-6.90C24.27-6.55 24.74-6.74 24.81-7.16C24.87-7.50 24.90-8.04 24.90-8.55C24.90-14.27 20.92-17.03 15.32-17.03C13.44-17.03 11.25-16.57 9.53-16.57C7.64-16.57 5.52-16.72 3.83-18.53C3.35-19.02 2.63-18.95 2.44-18.15Z" fill="currentColor" />
-  </SFIcon>
-);
-
 const CommandIcon = ({ size = 20, className = "" }) => (
   <SFIcon size={size} className={className}>
     <path transform="matrix(0.90, 0, 0, 0.90, -0.70, 19.67)" d="M7.17 2.55C9.48 2.55 11.36 0.68 11.36-1.64L11.36-4.01L16.76-4.01L16.76-1.64C16.76 0.68 18.63 2.55 20.94 2.55C23.25 2.55 25.13 0.68 25.13-1.64C25.13-3.96 23.25-5.78 20.94-5.78L18.59-5.78L18.59-11.19L20.94-11.19C23.25-11.19 25.13-13.01 25.13-15.33C25.13-17.65 23.25-19.54 20.94-19.54C18.63-19.54 16.76-17.65 16.76-15.33L16.76-12.96L11.36-12.96L11.36-15.33C11.36-17.65 9.48-19.54 7.17-19.54C4.86-19.54 2.99-17.65 2.99-15.33C2.99-13.01 4.86-11.19 7.17-11.19L9.53-11.19L9.53-5.78L7.17-5.78C4.86-5.78 2.99-3.96 2.99-1.64C2.99 0.68 4.86 2.55 7.17 2.55ZM7.17-12.96C5.88-12.96 4.82-14.03 4.82-15.33C4.82-16.63 5.88-17.71 7.17-17.71C8.46-17.71 9.53-16.63 9.53-15.33L9.53-12.96ZM20.94-17.71C22.23-17.71 23.30-16.63 23.30-15.33C23.30-14.03 22.23-12.96 20.94-12.96L18.59-12.96L18.59-15.33C18.59-16.63 19.65-17.71 20.94-17.71ZM11.36-5.78L11.36-11.19L16.76-11.19L16.76-5.78ZM4.82-1.64C4.82-2.94 5.88-4.01 7.17-4.01L9.53-4.01L9.53-1.64C9.53-0.34 8.46 0.73 7.17 0.73C5.88 0.73 4.82-0.34 4.82-1.64ZM18.59-1.64L18.59-4.01L20.94-4.01C22.23-4.01 23.30-2.94 23.30-1.64C23.30-0.34 22.23 0.73 20.94 0.73C19.65 0.73 18.59-0.34 18.59-1.64Z" fill="currentColor" />
@@ -71,6 +66,11 @@ interface MillowConfig {
   whisper_mode: boolean;
   groq_api_key: string | null;
   auto_launch: boolean;
+  noise_tolerance: number;
+  silence_duration: number;
+  auto_stop_duration: number;
+  newline_after_segment: boolean;
+  hallucination_filters: string[];
 }
 
 type AppMode = "dictation" | "translate" | "command";
@@ -85,13 +85,16 @@ function App() {
   const [config, setConfig] = useState<MillowConfig | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [notification, setNotification] = useState("");
+  const [settingsTab, setSettingsTab] = useState<"general" | "audio" | "filters">("general");
   const [dictInput, setDictInput] = useState(""); // custom dictionary textarea
+  const [halInput, setHalInput] = useState(""); // hallucination filters textarea
   const [autoLaunch, setAutoLaunch] = useState(false);
 
   useEffect(() => {
     invoke<MillowConfig>("get_config").then((c) => {
       setConfig(c);
       setDictInput((c.custom_dictionary || []).join("\n"));
+      setHalInput((c.hallucination_filters || []).join("\n"));
       setAutoLaunch(c.auto_launch || false);
     });
     invoke<boolean>("get_auto_launch").then((v) => setAutoLaunch(v));
@@ -158,7 +161,8 @@ function App() {
     if (config) {
       // Dictionary textarea → array
       const dict = dictInput.split("\n").map((s) => s.trim()).filter((s) => s.length > 0);
-      const finalConfig = { ...config, custom_dictionary: dict };
+      const hal = halInput.split("\n").map((s) => s.trim()).filter((s) => s.length > 0);
+      const finalConfig = { ...config, custom_dictionary: dict, hallucination_filters: hal };
       // Kısayol değiştiyse runtime'da da güncelle
       if (config.hotkey !== finalConfig.hotkey) {
         try {
@@ -188,90 +192,143 @@ function App() {
           </button>
         </div>
 
+        <div className="settings-tabs">
+          <button className={"tab-btn " + (settingsTab === "general" ? "active" : "")} onClick={() => setSettingsTab("general")}>Genel</button>
+          <button className={"tab-btn " + (settingsTab === "audio" ? "active" : "")} onClick={() => setSettingsTab("audio")}>Ses</button>
+          <button className={"tab-btn " + (settingsTab === "filters" ? "active" : "")} onClick={() => setSettingsTab("filters")}>Filtreler</button>
+        </div>
+
         <div className="settings-scroll">
-          {/* API */}
-          <div className="settings-group">
-            <div className="settings-group-title">API Ayarları</div>
-            <label className="setting-row">
-              <span>Groq API Key</span>
-              <input type="password" value={config.groq_api_key || ""} onChange={(e) => updateConfig({ groq_api_key: e.target.value || null })} placeholder="gsk_..." />
-            </label>
-          </div>
-
-          {/* Sözlük */}
-          <div className="settings-group">
-            <div className="settings-group-title">Özel Sözlük</div>
-            <div className="setting-row dictionary">
-              <textarea
-                value={dictInput}
-                onChange={(e) => setDictInput(e.target.value)}
-                placeholder={"Her satira bir kelime yazin: Tereza, Nietzsche..."}
-                rows={4}
-              />
+          {settingsTab === "general" && (<>
+            <div className="settings-group">
+              <div className="settings-group-title">API Ayarları</div>
+              <label className="setting-row">
+                <span>Groq API Key</span>
+                <input type="password" value={config.groq_api_key || ""} onChange={(e) => updateConfig({ groq_api_key: e.target.value || null })} placeholder="gsk_..." />
+              </label>
             </div>
-          </div>
 
-          {/* Dil */}
-          <div className="settings-group">
-            <div className="settings-group-title">Dil</div>
-            <label className="setting-row">
-              <span>Varsayılan</span>
-              <select value={config.default_language} onChange={(e) => updateConfig({ default_language: e.target.value })}>
-                <option value="tr">Türkçe</option>
-                <option value="en">English</option>
-              </select>
-            </label>
-            <label className="setting-row">
-              <span>Çeviri Hedef</span>
-              <select value={config.translation_target} onChange={(e) => updateConfig({ translation_target: e.target.value })}>
-                <option value="en">English</option>
-                <option value="tr">Türkçe</option>
-                <option value="de">Deutsch</option>
-                <option value="fr">Français</option>
-                <option value="es">Español</option>
-              </select>
-            </label>
-          </div>
+            <div className="settings-group">
+              <div className="settings-group-title">Dil</div>
+              <label className="setting-row">
+                <span>Varsayılan</span>
+                <select value={config.default_language} onChange={(e) => updateConfig({ default_language: e.target.value })}>
+                  <option value="tr">Türkçe</option>
+                  <option value="en">English</option>
+                </select>
+              </label>
+              <label className="setting-row">
+                <span>Çeviri Hedef</span>
+                <select value={config.translation_target} onChange={(e) => updateConfig({ translation_target: e.target.value })}>
+                  <option value="en">English</option>
+                  <option value="tr">Türkçe</option>
+                  <option value="de">Deutsch</option>
+                  <option value="fr">Français</option>
+                  <option value="es">Español</option>
+                </select>
+              </label>
+            </div>
 
-          {/* Etkileşim */}
-          <div className="settings-group">
-            <div className="settings-group-title">Etkileşim</div>
-            <label className="setting-row">
-              <span>Kısayol Tuşu</span>
-              <select value={config.hotkey} onChange={(e) => updateConfig({ hotkey: e.target.value })}>
-                <option value="Alt+Space">⌥ Space</option>
-                <option value="Ctrl+Space">⌃ Space</option>
-                <option value="Shift+Space">⇧ Space</option>
-                <option value="Ctrl+Alt+Space">⌃⌥ Space</option>
-                <option value="Cmd+Shift+Space">⌘⇧ Space</option>
-                <option value="F5">F5</option>
-                <option value="F6">F6</option>
-                <option value="F7">F7</option>
-                <option value="F8">F8</option>
-                <option value="FnDoubleTap">Fn Fn (Çift Tıkla)</option>
-              </select>
-            </label>
-            <label className="setting-row toggle">
-              <span>Basılı Tutma Modu</span>
-              <input type="checkbox" checked={config.hold_to_talk} onChange={(e) => updateConfig({ hold_to_talk: e.target.checked })} />
-            </label>
-          </div>
-          {/* Sistem */}
-          <div className="settings-group">
-            <div className="settings-group-title">Sistem</div>
-            <label className="setting-row toggle">
-              <span>Başlangıçta Çalış</span>
-              <input type="checkbox" checked={autoLaunch} onChange={async (e) => {
-                const enabled = e.target.checked;
-                try {
-                  await invoke("set_auto_launch", { enabled });
-                  setAutoLaunch(enabled);
-                } catch (err) {
-                  console.error("Auto launch hatası:", err);
-                }
-              }} />
-            </label>
-          </div>
+            <div className="settings-group">
+              <div className="settings-group-title">Etkileşim</div>
+              <label className="setting-row">
+                <span>Kısayol Tuşu</span>
+                <select value={config.hotkey} onChange={(e) => updateConfig({ hotkey: e.target.value })}>
+                  <option value="Alt+Space">⌥ Space</option>
+                  <option value="Ctrl+Space">⌃ Space</option>
+                  <option value="Shift+Space">⇧ Space</option>
+                  <option value="Ctrl+Alt+Space">⌃⌥ Space</option>
+                  <option value="Cmd+Shift+Space">⌘⇧ Space</option>
+                  <option value="F5">F5</option>
+                  <option value="F6">F6</option>
+                  <option value="F7">F7</option>
+                  <option value="F8">F8</option>
+                  <option value="FnDoubleTap">Fn Fn (Çift Tıkla)</option>
+                </select>
+              </label>
+            </div>
+
+            <div className="settings-group">
+              <div className="settings-group-title">Sistem</div>
+              <label className="setting-row toggle">
+                <span>Başlangıçta Çalış</span>
+                <input type="checkbox" checked={autoLaunch} onChange={async (e) => {
+                  const enabled = e.target.checked;
+                  try {
+                    await invoke("set_auto_launch", { enabled });
+                    setAutoLaunch(enabled);
+                  } catch (err) {
+                    console.error("Auto launch hatası:", err);
+                  }
+                }} />
+              </label>
+            </div>
+          </>)}
+
+          {settingsTab === "audio" && (<>
+            <div className="settings-group">
+              <div className="settings-group-title">Ses Algılama</div>
+              <label className="setting-row">
+                <span>Gürültü Toleransı</span>
+                <div className="slider-wrap">
+                  <input type="range" min="0.01" max="0.50" step="0.01" value={config.noise_tolerance} onChange={(e) => updateConfig({ noise_tolerance: parseFloat(e.target.value) })} />
+                  <span className="slider-val">{config.noise_tolerance.toFixed(2)}</span>
+                </div>
+              </label>
+              <label className="setting-row">
+                <span>Sessizlik Süresi</span>
+                <div className="slider-wrap">
+                  <input type="range" min="0.5" max="5" step="0.5" value={config.silence_duration} onChange={(e) => updateConfig({ silence_duration: parseFloat(e.target.value) })} />
+                  <span className="slider-val">{config.silence_duration}s</span>
+                </div>
+              </label>
+              <label className="setting-row">
+                <span>Otomatik Kapanma</span>
+                <div className="slider-wrap">
+                  <input type="range" min="10" max="120" step="5" value={config.auto_stop_duration} onChange={(e) => updateConfig({ auto_stop_duration: parseFloat(e.target.value) })} />
+                  <span className="slider-val">{config.auto_stop_duration}s</span>
+                </div>
+              </label>
+            </div>
+
+            <div className="settings-group">
+              <div className="settings-group-title">Davranış</div>
+              <label className="setting-row toggle">
+                <span>Basılı Tutma Modu</span>
+                <input type="checkbox" checked={config.hold_to_talk} onChange={(e) => updateConfig({ hold_to_talk: e.target.checked })} />
+              </label>
+              <label className="setting-row toggle">
+                <span>Segment Sonrası Satır Sonu</span>
+                <input type="checkbox" checked={config.newline_after_segment} onChange={(e) => updateConfig({ newline_after_segment: e.target.checked })} />
+              </label>
+            </div>
+          </>)}
+
+          {settingsTab === "filters" && (<>
+            <div className="settings-group">
+              <div className="settings-group-title">Özel Sözlük</div>
+              <div className="setting-row dictionary">
+                <textarea
+                  value={dictInput}
+                  onChange={(e) => setDictInput(e.target.value)}
+                  placeholder={"Her satıra bir kelime: Tereza, Nietzsche..."}
+                  rows={5}
+                />
+              </div>
+            </div>
+
+            <div className="settings-group">
+              <div className="settings-group-title">Hallucination Filtresi</div>
+              <div className="setting-row dictionary">
+                <textarea
+                  value={halInput}
+                  onChange={(e) => setHalInput(e.target.value)}
+                  placeholder={"Her satıra bir filtre: Altyazı M.K., İzlediğiniz için teşekkürler..."}
+                  rows={5}
+                />
+              </div>
+            </div>
+          </>)}
         </div>
       </div>
     );
@@ -282,11 +339,11 @@ function App() {
       {/* Araç Çubuğu */}
       <div className="toolbar">
         <div className="toolbar-leading">
-          <LeafIcon size={16} className="leaf-icon" />
+          <img src={appIcon} alt="Millow" className="app-icon" />
           <span className="toolbar-title">Millow</span>
         </div>
-        <button className="toolbar-btn icon" onClick={() => setShowSettings(true)}>
-          <GearIcon size={15} />
+        <button className="toolbar-btn settings-btn" onClick={() => setShowSettings(true)}>
+          <GearIcon size={15} /> Ayarlar
         </button>
       </div>
 

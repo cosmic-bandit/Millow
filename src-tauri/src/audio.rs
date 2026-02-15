@@ -27,6 +27,8 @@ pub struct AudioEngine {
     active_stream: Mutex<Option<StreamHolder>>,
     /// Son ses aktivitesi zamanı (sessizlik algılama için)
     last_voice_activity: Arc<Mutex<std::time::Instant>>,
+    /// Ortam gürültüsü toleransı
+    noise_tolerance: Arc<Mutex<f32>>,
 }
 
 impl AudioEngine {
@@ -37,6 +39,7 @@ impl AudioEngine {
             actual_sample_rate: Arc::new(Mutex::new(16000)),
             active_stream: Mutex::new(None),
             last_voice_activity: Arc::new(Mutex::new(std::time::Instant::now())),
+            noise_tolerance: Arc::new(Mutex::new(0.15)),
         }
     }
 
@@ -58,6 +61,7 @@ impl AudioEngine {
         }
 
         self.samples.lock().clear();
+        *self.noise_tolerance.lock() = crate::config::MillowConfig::load().noise_tolerance;
         *self.last_voice_activity.lock() = std::time::Instant::now();
         *state = RecordingState::Recording;
         drop(state); // Lock'u serbest bırak
@@ -92,7 +96,8 @@ impl AudioEngine {
         let state_clone = self.state.clone();
         let channels = device_channels as usize;
         let voice_ts = self.last_voice_activity.clone();
-        let silence_threshold: i16 = 1500; // ~1.5% of max
+        let noise_tol = *self.noise_tolerance.lock();
+        let silence_threshold: i16 = (noise_tol * 32767.0) as i16; // ~1.5% of max
 
         let stream = match sample_format {
             cpal::SampleFormat::I16 => {
@@ -124,7 +129,7 @@ impl AudioEngine {
                 let samples2 = self.samples.clone();
                 let state_clone2 = self.state.clone();
                 let voice_ts2 = self.last_voice_activity.clone();
-                let silence_threshold_f: f32 = 0.15;
+                let silence_threshold_f: f32 = *self.noise_tolerance.lock();
                 device.build_input_stream(
                     &config,
                     move |data: &[f32], _: &cpal::InputCallbackInfo| {
@@ -178,6 +183,10 @@ impl AudioEngine {
     }
 
     /// Buffer'daki sesleri al ve temizle, ama kayda devam et (segment flush)
+    pub fn set_noise_tolerance(&self, val: f32) {
+        *self.noise_tolerance.lock() = val;
+    }
+
     pub fn drain_samples(&self) -> Vec<i16> {
         let mut samples = self.samples.lock();
         let drained = samples.clone();
