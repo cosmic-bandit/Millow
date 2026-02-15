@@ -187,12 +187,30 @@ impl GeminiTranscriber {
             "...", "…",
             "Teşekkürler.", "Teşekkür ederim.",
             "İyi seyirler.",
+            "İzlediğiniz için teşekkür ederim.",
+            "İzlediğiniz için teşekkürler.",
+            "Dinlediğiniz için teşekkürler.",
+            "Abone olmayı unutmayın.",
+            "Beğenmeyi ve abone olmayı unutmayın.",
+            "Thank you for watching.",
+            "Thanks for watching.",
+            "Please subscribe.",
         ];
+        // Tam eşleşme → tamamen boşalt
         let text = if hallucinations.iter().any(|h| raw_text == *h) || raw_text.len() < 3 {
             println!("🚫 Whisper hallucination filtrelendi: [{}]", raw_text);
             String::new()
         } else {
-            raw_text
+            // Metnin sonundaki hallucination'ları temizle
+            let mut cleaned = raw_text.clone();
+            for h in &hallucinations {
+                cleaned = cleaned.replace(h, "");
+            }
+            cleaned = cleaned.trim().to_string();
+            if cleaned != raw_text {
+                println!("🧹 Hallucination temizlendi: [{}] → [{}]", raw_text, cleaned);
+            }
+            cleaned
         };
         let elapsed = t0.elapsed().as_secs_f64();
         println!("⚡ Groq Whisper: {:.1}s → \"{}...\"", elapsed,

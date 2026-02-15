@@ -10,6 +10,9 @@ mod typer;
 use audio::AudioEngine;
 use config::MillowConfig;
 use parking_lot::Mutex;
+use std::sync::OnceLock;
+static APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
+
 use std::sync::Arc;
 use tauri::{
     menu::{MenuBuilder, MenuEvent, MenuItemBuilder},
@@ -109,7 +112,7 @@ pub fn flush_segment(state: Arc<AppState>) {
     // Ses seviyesi kontrolü — sessiz segmentleri atla (API hallucination önleme)
     let rms: f64 = (samples.iter().map(|&s| (s as f64) * (s as f64)).sum::<f64>() / samples.len() as f64).sqrt();
     let peak = samples.iter().map(|s| s.abs() as u16).max().unwrap_or(0);
-    if rms < 300.0 || peak < 500 {
+    if rms < 200.0 && peak < 400 {
         println!("⏭️  Segment çok sessiz (rms={:.0}, peak={}), atlanıyor", rms, peak);
         return;
     }
@@ -315,7 +318,44 @@ pub fn toggle_recording(state: Arc<AppState>) {
                 *state.source_app.lock() = get_active_app();
                 *state.is_recording.lock() = true;
                 println!("🎙️  Kayıt başladı!");
-                notify("🎙️ Kayıt", "Konuşun, bitince tekrar basın");
+                std::thread::spawn(|| { notify("🎙️ Kayıt", "3s susunca yazar, 30s susunca kapanır"); });
+                
+                // Watchdog: 3s sessizlik → segment flush, 30s → kapat
+                let state_wd = Arc::clone(&state);
+                std::thread::spawn(move || {
+                    let mut total_silence: f64 = 0.0;
+                    let mut had_voice = false;
+                    let mut segment_flushed = false;
+                    loop {
+                        std::thread::sleep(std::time::Duration::from_millis(500));
+                        let is_rec = *state_wd.is_recording.lock();
+                        if !is_rec { break; }
+                        
+                        let silence_secs = state_wd.audio_engine.lock().seconds_since_voice();
+                        
+                        if silence_secs < 1.0 {
+                            had_voice = true;
+                            segment_flushed = false;
+                            total_silence = 0.0;
+                        } else {
+                            total_silence = silence_secs;
+                        }
+                        
+                        if had_voice && !segment_flushed && silence_secs >= 1.5 {
+                            println!("📝 3s sessizlik — segment flush");
+                            flush_segment(Arc::clone(&state_wd));
+                            segment_flushed = true;
+                            had_voice = false;
+                        }
+                        
+                        if total_silence >= 30.0 {
+                            println!("🔇 30s sessizlik — otomatik durdurma");
+                            notify("🔇 Sessizlik", "30s ses gelmedi, durduruldu");
+                            toggle_recording(Arc::clone(&state_wd));
+                            break;
+                        }
+                    }
+                });
             }
             Err(e) => {
                 let err_msg = e.to_string();
@@ -328,15 +368,20 @@ pub fn toggle_recording(state: Arc<AppState>) {
 
 /// macOS bildirimi göster
 fn notify(title: &str, message: &str) {
+    if let Some(handle) = APP_HANDLE.get() {
+        use tauri_plugin_notification::NotificationExt;
+        let _ = handle.notification()
+            .builder()
+            .title(title)
+            .body(message)
+            .show();
+        return;
+    }
     let _ = std::process::Command::new("osascript")
-        .args([
-            "-e",
-            &format!(
-                "display notification \"{}\" with title \"{}\"",
-                message.replace('"', "'"),
-                title.replace('"', "'")
-            ),
-        ])
+        .args(["-e", &format!(
+            "display notification \"{}\" with title \"{}\"",
+            message.replace('"', "'"), title.replace('"', "'")
+        )])
         .output();
 }
 
@@ -575,6 +620,13 @@ pub fn run() {
             set_auto_launch,
         ])
         .setup(move |app| {
+            let _ = APP_HANDLE.set(app.handle().clone());
+            
+            // Bildirim izni iste
+            {
+                use tauri_plugin_notification::NotificationExt;
+                let _ = app.notification().request_permission();
+            }
             // ── Menü Oluştur ──
             let toggle = MenuItemBuilder::with_id("toggle", "Kayıt Başlat/Durdur")
                 .build(app)?;
@@ -757,7 +809,7 @@ pub fn run() {
                                                 *state_start.source_app.lock() = get_active_app();
                                                 *state_start.is_recording.lock() = true;
                                                 println!("🎙️  Fn kayıt başladı (hedef: {:?})", state_start.source_app.lock());
-                                                notify("🎙️ Kayıt", "Konuşun, 30s sessizlikte otomatik durur");
+                                                std::thread::spawn(|| { notify("🎙️ Kayıt", "3s susunca yazar, 30s susunca kapanır"); });
                                                 // Watchdog: 3s sessizlik → segment flush, 30s → kapat
                                                 let state_wd = Arc::clone(&state_start);
                                                 std::thread::spawn(move || {
@@ -781,7 +833,8 @@ pub fn run() {
                                                         }
                                                         
                                                         // 3s sessizlik + konuşma olduysa → segment flush
-                                                        if had_voice && !segment_flushed && silence_secs >= 3.0 {
+
+                                                        if had_voice && !segment_flushed && silence_secs >= 1.5 {
                                                             println!("📝 3s sessizlik — segment flush");
                                                             flush_segment(Arc::clone(&state_wd));
                                                             segment_flushed = true;

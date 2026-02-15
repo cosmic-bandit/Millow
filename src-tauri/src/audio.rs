@@ -92,7 +92,7 @@ impl AudioEngine {
         let state_clone = self.state.clone();
         let channels = device_channels as usize;
         let voice_ts = self.last_voice_activity.clone();
-        let silence_threshold: i16 = 500; // ~1.5% of max
+        let silence_threshold: i16 = 1500; // ~1.5% of max
 
         let stream = match sample_format {
             cpal::SampleFormat::I16 => {
@@ -124,7 +124,7 @@ impl AudioEngine {
                 let samples2 = self.samples.clone();
                 let state_clone2 = self.state.clone();
                 let voice_ts2 = self.last_voice_activity.clone();
-                let silence_threshold_f: f32 = 0.015;
+                let silence_threshold_f: f32 = 0.15;
                 device.build_input_stream(
                     &config,
                     move |data: &[f32], _: &cpal::InputCallbackInfo| {
