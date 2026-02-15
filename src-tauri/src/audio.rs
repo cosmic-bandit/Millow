@@ -177,6 +177,14 @@ impl AudioEngine {
         self.samples.lock().clone()
     }
 
+    /// Buffer'daki sesleri al ve temizle, ama kayda devam et (segment flush)
+    pub fn drain_samples(&self) -> Vec<i16> {
+        let mut samples = self.samples.lock();
+        let drained = samples.clone();
+        samples.clear();
+        drained
+    }
+
     pub fn is_recording(&self) -> bool {
         *self.state.lock() == RecordingState::Recording
     }

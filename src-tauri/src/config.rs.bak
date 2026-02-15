@@ -67,11 +67,6 @@ pub struct MillowConfig {
     /// Groq API anahtarı (ücretsiz — console.groq.com)
     #[serde(default)]
     pub groq_api_key: Option<String>,
-
-    // ── Başlangıçta Çalış ──
-    /// Mac açılınca otomatik başlat
-    #[serde(default)]
-    pub auto_launch: bool,
 }
 
 fn default_true() -> bool {
@@ -104,7 +99,6 @@ impl Default for MillowConfig {
             writing_style: "auto".into(),
             whisper_mode: false,
             groq_api_key: None,
-            auto_launch: false,
         }
     }
 }

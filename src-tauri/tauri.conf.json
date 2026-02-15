@@ -14,9 +14,9 @@
       {
         "title": "Millow — Ayarlar",
         "width": 480,
-        "height": 640,
+        "height": 860,
         "visible": false,
-        "resizable": false,
+        "resizable": true,
         "center": true,
         "decorations": true
       }
@@ -37,8 +37,7 @@
     ],
     "macOS": {
       "infoPlist": "Info.plist",
-      "entitlements": "Entitlements.plist",
-      "signingIdentity": "-"
+      "entitlements": "Entitlements.plist"
     }
   }
 }

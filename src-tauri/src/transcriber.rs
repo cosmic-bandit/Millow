@@ -174,7 +174,26 @@ impl GeminiTranscriber {
         let groq_resp: GroqResponse = response.json()
             .map_err(|e| format!("Groq JSON hatası: {}", e))?;
 
-        let text = groq_resp.text.unwrap_or_default().trim().to_string();
+        let raw_text = groq_resp.text.unwrap_or_default().trim().to_string();
+        
+        // Whisper hallucination filtresi — sessizlikte üretilen sahte metinler
+        let hallucinations = [
+            "Altyazı M.K.", "altyazı m.k.", "Altyazı M.K",
+            "Alt yazı M.K.", "Altyazılar M.K.",
+            "Altyazı", "Alt yazı",
+            "Subtitles by", "Sottotitoli",
+            "Thank you.", "Thanks for watching.",
+            "you", "You",
+            "...", "…",
+            "Teşekkürler.", "Teşekkür ederim.",
+            "İyi seyirler.",
+        ];
+        let text = if hallucinations.iter().any(|h| raw_text == *h) || raw_text.len() < 3 {
+            println!("🚫 Whisper hallucination filtrelendi: [{}]", raw_text);
+            String::new()
+        } else {
+            raw_text
+        };
         let elapsed = t0.elapsed().as_secs_f64();
         println!("⚡ Groq Whisper: {:.1}s → \"{}...\"", elapsed,
             &text.chars().take(60).collect::<String>());

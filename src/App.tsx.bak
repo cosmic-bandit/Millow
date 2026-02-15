@@ -70,7 +70,6 @@ interface MillowConfig {
   writing_style: string;
   whisper_mode: boolean;
   groq_api_key: string | null;
-  auto_launch: boolean;
 }
 
 type AppMode = "dictation" | "translate" | "command";
@@ -86,15 +85,12 @@ function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [notification, setNotification] = useState("");
   const [dictInput, setDictInput] = useState(""); // custom dictionary textarea
-  const [autoLaunch, setAutoLaunch] = useState(false);
 
   useEffect(() => {
     invoke<MillowConfig>("get_config").then((c) => {
       setConfig(c);
       setDictInput((c.custom_dictionary || []).join("\n"));
-      setAutoLaunch(c.auto_launch || false);
     });
-    invoke<boolean>("get_auto_launch").then((v) => setAutoLaunch(v));
   }, []);
 
   useEffect(() => {
@@ -177,7 +173,7 @@ function App() {
 
   if (showSettings && config) {
     return (
-      <div className="window" onKeyDown={(e) => { const tag = (e.target as HTMLElement).tagName; if (tag !== "INPUT" && tag !== "TEXTAREA" && tag !== "SELECT") e.preventDefault(); }} onKeyUp={(e) => { const tag = (e.target as HTMLElement).tagName; if (tag !== "INPUT" && tag !== "TEXTAREA" && tag !== "SELECT") e.preventDefault(); }}>
+      <div className="window">
         <div className="toolbar">
           <button className="toolbar-btn back" onClick={() => setShowSettings(false)}>
             ‹ Geri
@@ -248,28 +244,11 @@ function App() {
                 <option value="F6">F6</option>
                 <option value="F7">F7</option>
                 <option value="F8">F8</option>
-                <option value="FnDoubleTap">Fn Fn (Çift Tıkla)</option>
               </select>
             </label>
             <label className="setting-row toggle">
               <span>Basılı Tutma Modu</span>
               <input type="checkbox" checked={config.hold_to_talk} onChange={(e) => updateConfig({ hold_to_talk: e.target.checked })} />
-            </label>
-          </div>
-          {/* Sistem */}
-          <div className="settings-group">
-            <div className="settings-group-title">Sistem</div>
-            <label className="setting-row toggle">
-              <span>Başlangıçta Çalış</span>
-              <input type="checkbox" checked={autoLaunch} onChange={async (e) => {
-                const enabled = e.target.checked;
-                try {
-                  await invoke("set_auto_launch", { enabled });
-                  setAutoLaunch(enabled);
-                } catch (err) {
-                  console.error("Auto launch hatası:", err);
-                }
-              }} />
             </label>
           </div>
         </div>
@@ -358,7 +337,7 @@ function App() {
 
       {/* Alt Bilgi */}
       <div className="footer-bar">
-        <span className="shortcut-badge">{config?.hotkey === "FnDoubleTap" ? "Fn Fn" : (config?.hotkey || "⌥ Space")}</span>
+        <span className="shortcut-badge">{config?.hotkey || "⌥ Space"}</span>
         <span className="footer-sep">·</span>
         <span className="footer-text">{config?.hold_to_talk ? "Basılı Tut" : "Dikte"}</span>
       </div>

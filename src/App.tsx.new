@@ -177,7 +177,7 @@ function App() {
 
   if (showSettings && config) {
     return (
-      <div className="window" onKeyDown={(e) => { const tag = (e.target as HTMLElement).tagName; if (tag !== "INPUT" && tag !== "TEXTAREA" && tag !== "SELECT") e.preventDefault(); }} onKeyUp={(e) => { const tag = (e.target as HTMLElement).tagName; if (tag !== "INPUT" && tag !== "TEXTAREA" && tag !== "SELECT") e.preventDefault(); }}>
+      <div className="window">
         <div className="toolbar">
           <button className="toolbar-btn back" onClick={() => setShowSettings(false)}>
             ‹ Geri
@@ -248,7 +248,6 @@ function App() {
                 <option value="F6">F6</option>
                 <option value="F7">F7</option>
                 <option value="F8">F8</option>
-                <option value="FnDoubleTap">Fn Fn (Çift Tıkla)</option>
               </select>
             </label>
             <label className="setting-row toggle">
@@ -358,7 +357,7 @@ function App() {
 
       {/* Alt Bilgi */}
       <div className="footer-bar">
-        <span className="shortcut-badge">{config?.hotkey === "FnDoubleTap" ? "Fn Fn" : (config?.hotkey || "⌥ Space")}</span>
+        <span className="shortcut-badge">{config?.hotkey || "⌥ Space"}</span>
         <span className="footer-sep">·</span>
         <span className="footer-text">{config?.hold_to_talk ? "Basılı Tut" : "Dikte"}</span>
       </div>

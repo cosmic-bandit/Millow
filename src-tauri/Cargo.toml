@@ -42,10 +42,11 @@ tokio = { version = "1", features = ["full"] }
 parking_lot = "0.12"
 
 # Düşük seviyeli klavye dinleme (Fn tuşu için)
-rdev = "0.5"
+core-foundation = "0.10"
 # macOS CGEvent ile tuş simülasyonu
 core-graphics = "0.24"
 
 # macOS Dock gizleme (NSApplication activation policy)
 cocoa = "0.26"
+block = "0.1"
 objc = "0.2"

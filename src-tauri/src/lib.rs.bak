@@ -17,6 +17,7 @@ use tauri::{
     AppHandle, Manager, WebviewWindow,
 };
 use tauri_plugin_global_shortcut::GlobalShortcutExt;
+use rdev::{listen, Event, EventType, Key};
 
 // macOS Dock gizleme/gösterme
 #[cfg(target_os = "macos")]
@@ -55,8 +56,6 @@ pub struct AppState {
     /// Kayıt durumu
     is_recording: Mutex<bool>,
     is_processing: std::sync::atomic::AtomicBool,
-    /// Pencere görünür mü (rdev crash fix)
-    window_visible: std::sync::atomic::AtomicBool,
     /// Debounce: son kayıt başlama zamanı
     last_record_start: Mutex<std::time::Instant>,
 }
@@ -90,90 +89,6 @@ fn build_context(config: &MillowConfig) -> TranscribeContext {
         active_app: get_active_app(),
         whisper_mode: config.whisper_mode,
     }
-}
-
-/// Segment flush: mevcut buffer'ı transkript edip yapıştır, kayda devam et
-pub fn flush_segment(state: Arc<AppState>) {
-    use std::sync::atomic::Ordering;
-    if state.is_processing.load(Ordering::SeqCst) {
-        println!("⚠️  Zaten işleniyor, segment flush atlanıyor");
-        return;
-    }
-    
-    let samples = state.audio_engine.lock().drain_samples();
-    if samples.is_empty() {
-        println!("⏭️  Segment boş, atlanıyor");
-        return;
-    }
-    
-    // Ses seviyesi kontrolü — sessiz segmentleri atla (API hallucination önleme)
-    let rms: f64 = (samples.iter().map(|&s| (s as f64) * (s as f64)).sum::<f64>() / samples.len() as f64).sqrt();
-    let peak = samples.iter().map(|s| s.abs() as u16).max().unwrap_or(0);
-    if rms < 300.0 || peak < 500 {
-        println!("⏭️  Segment çok sessiz (rms={:.0}, peak={}), atlanıyor", rms, peak);
-        return;
-    }
-    
-    state.is_processing.store(true, Ordering::SeqCst);
-    
-    let config = state.config.lock().clone();
-    let actual_rate = state.audio_engine.lock().get_actual_sample_rate();
-    let wav_bytes = match AudioEngine::samples_to_wav(&samples, actual_rate) {
-        Ok(b) => b,
-        Err(e) => {
-            println!("❌ Segment WAV hatası: {}", e);
-            state.is_processing.store(false, Ordering::SeqCst);
-            return;
-        }
-    };
-    
-    let duration = samples.len() as f32 / config.sample_rate as f32;
-    println!("📝 Segment flush: {:.1}s ses transkript ediliyor…", duration);
-    
-    let mode = {
-        let current = state.current_mode.lock().clone();
-        match current.as_str() {
-            "translate" => TranscribeMode::Translate {
-                target_lang: config.translation_target.clone(),
-            },
-            "command" => TranscribeMode::Command,
-            _ => TranscribeMode::Dictation,
-        }
-    };
-    
-    let ctx = build_context(&config);
-    let transcriber = Arc::new(GeminiTranscriber::new(
-        &config.api_key,
-        &config.proxy_endpoint,
-        &config.model,
-    ));
-    
-    let state_proc = Arc::clone(&state);
-    std::thread::spawn(move || {
-        let t_start = std::time::Instant::now();
-        match transcriber.transcribe(&wav_bytes, &mode, &ctx) {
-            Ok(result) => {
-                println!("📝 Segment sonuç ({:.1}s): {:?}", t_start.elapsed().as_secs_f64(), result);
-                if !result.text.is_empty() {
-                    match typer::AutoTyper::new() {
-                        Ok(t) => {
-                            let src_app = state_proc.source_app.lock().clone();
-                            if let Err(e) = t.type_text_to_app(&result.text, src_app.as_deref()) {
-                                println!("❌ Segment yazma hatası: {}", e);
-                            } else {
-                                println!("✅ Segment yazıldı: {}", result.text);
-                            }
-                        }
-                        Err(e) => println!("❌ AutoTyper hatası: {}", e),
-                    }
-                }
-            }
-            Err(e) => {
-                println!("❌ Segment transkript hatası: {}", e);
-            }
-        }
-        state_proc.is_processing.store(false, Ordering::SeqCst);
-    });
 }
 
 /// Kaydı başlat/durdur ve transkript et (Rust tarafında tam döngü)
@@ -409,17 +324,7 @@ fn change_hotkey(app: AppHandle, state: tauri::State<'_, Arc<AppState>>, new_hot
     
     // Eski kısayolu kaldır
     let old_hotkey = state.config.lock().hotkey.clone();
-    if old_hotkey != "FnDoubleTap" {
-        let _ = app.global_shortcut().unregister(old_hotkey.as_str());
-    }
-    
-    // FnDoubleTap seçildiyse global shortcut kaydetme, rdev halleder
-    if new_hotkey == "FnDoubleTap" {
-        state.config.lock().hotkey = new_hotkey.clone();
-        state.config.lock().save();
-        println!("🎹 Kısayol değiştirildi: {} → {} (rdev)", old_hotkey, new_hotkey);
-        return Ok(format!("Kısayol değiştirildi: {}", new_hotkey));
-    }
+    let _ = app.global_shortcut().unregister(old_hotkey.as_str());
     
     // Yeni kısayolu kaydet
     let state_clone = (*state).clone();
@@ -473,69 +378,6 @@ fn change_hotkey(app: AppHandle, state: tauri::State<'_, Arc<AppState>>, new_hot
     Ok(format!("Kısayol değiştirildi: {}", new_hotkey))
 }
 
-// ── Başlangıçta Çalış (LaunchAgent) ──
-
-fn launch_agent_path() -> std::path::PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    std::path::PathBuf::from(home)
-        .join("Library")
-        .join("LaunchAgents")
-        .join("com.millow.app.plist")
-}
-
-fn get_app_path() -> String {
-    if std::path::Path::new("/Applications/Millow.app").exists() {
-        "/Applications/Millow.app".to_string()
-    } else {
-        std::env::current_exe()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_default()
-    }
-}
-
-#[tauri::command]
-fn get_auto_launch() -> bool {
-    launch_agent_path().exists()
-}
-
-#[tauri::command]
-fn set_auto_launch(state: tauri::State<'_, Arc<AppState>>, enabled: bool) -> Result<String, String> {
-    let plist_path = launch_agent_path();
-
-    if enabled {
-        let app_path = get_app_path();
-        if app_path.is_empty() {
-            return Err("Uygulama yolu bulunamadı".into());
-        }
-
-        let plist_content = format!(
-            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n    <key>Label</key>\n    <string>com.millow.app</string>\n    <key>ProgramArguments</key>\n    <array>\n        <string>/usr/bin/open</string>\n        <string>-a</string>\n        <string>{}</string>\n    </array>\n    <key>RunAtLoad</key>\n    <true/>\n</dict>\n</plist>",
-            app_path
-        );
-
-        if let Some(parent) = plist_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-
-        std::fs::write(&plist_path, plist_content)
-            .map_err(|e| format!("LaunchAgent yazılamadı: {}", e))?;
-
-        println!("✅ Başlangıçta çalış aktif: {}", plist_path.display());
-    } else {
-        if plist_path.exists() {
-            std::fs::remove_file(&plist_path)
-                .map_err(|e| format!("LaunchAgent silinemedi: {}", e))?;
-        }
-        println!("❌ Başlangıçta çalış devre dışı");
-    }
-
-    let mut config = state.config.lock();
-    config.auto_launch = enabled;
-    config.save();
-
-    Ok(if enabled { "Aktif".into() } else { "Devre dışı".into() })
-}
-
 // ── Uygulama Başlatma ──
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -551,7 +393,6 @@ pub fn run() {
         source_app: Mutex::new(None),
         is_recording: Mutex::new(false),
         is_processing: std::sync::atomic::AtomicBool::new(false),
-        window_visible: std::sync::atomic::AtomicBool::new(false),
         last_record_start: Mutex::new(std::time::Instant::now()),
     });
 
@@ -571,8 +412,6 @@ pub fn run() {
             set_mode,
             health_check,
             change_hotkey,
-            get_auto_launch,
-            set_auto_launch,
         ])
         .setup(move |app| {
             // ── Menü Oluştur ──
@@ -638,7 +477,6 @@ pub fn run() {
                             notify("Mod", "🤖 Komut modu aktif");
                         }
                         "settings" => {
-                            state_for_tray.window_visible.store(true, std::sync::atomic::Ordering::Relaxed);
                             #[cfg(target_os = "macos")]
                             show_dock();
                             if let Some(window) = app.get_webview_window("main") {
@@ -708,49 +546,29 @@ pub fn run() {
                 }
             })?;
 
-            // ── Double-Tap Fn Tuşu Dinleyicisi (NSEvent global monitor) ──
+            // ── Double-Tap Fn Tuşu Dinleyicisi (rdev) + 30s Sessizlik Watchdog ──
             let state_for_fn = state_for_manager.clone();
-            // NSEvent.addGlobalMonitorForEvents — main-thread-safe, WKWebView ile çakışmaz
-            {
-                use cocoa::base::{id, nil};
-                use cocoa::foundation::NSAutoreleasePool;
-                use objc::runtime::Object;
-                use objc::msg_send;
-                use objc::sel;
-                use objc::sel_impl;
-                use std::sync::Arc;
+            std::thread::spawn(move || {
+                println!("🎹 Double-tap Fn dinleyicisi başlatıldı");
+                let state = state_for_fn;
+                let last_fn_press = Arc::new(Mutex::new(std::time::Instant::now() - std::time::Duration::from_secs(10)));
                 
-                let state = state_for_fn.clone();
-                let last_fn_press = Arc::new(parking_lot::Mutex::new(std::time::Instant::now() - std::time::Duration::from_secs(10)));
-                
-                let last_fn = last_fn_press.clone();
-                let state_cb = state.clone();
-                
-                // NSEvent flagsChanged mask = 1 << 12 = 4096 = NSEventMaskFlagsChanged
-                let mask: u64 = 1 << 12; // NSEventMaskFlagsChanged
-                
-                let block = block::ConcreteBlock::new(move |event: id| {
-                    // Pencere açıkken ignore et
-                    if state_cb.window_visible.load(std::sync::atomic::Ordering::Relaxed) {
-                        return;
-                    }
-                    
-                    unsafe {
-                        let flags: u64 = msg_send![event, modifierFlags];
-                        let fn_flag: u64 = 1 << 23; // NSEventModifierFlagFunction = 0x800000
-                        
-                        if flags & fn_flag != 0 {
+                if let Err(error) = listen(move |event: Event| {
+                    match event.event_type {
+                        EventType::KeyPress(Key::Function) => {
                             let now = std::time::Instant::now();
-                            let mut last = last_fn.lock();
+                            let mut last = last_fn_press.lock();
                             let elapsed = now.duration_since(*last);
                             
-                            if elapsed.as_millis() < 400 && elapsed.as_millis() > 50 {
+                            if elapsed.as_millis() < 400 {
+                                // Double-tap algılandı!
                                 println!("🎹 Double-tap Fn algılandı! ({:.0}ms)", elapsed.as_millis());
-                                *last = now - std::time::Duration::from_secs(10);
+                                *last = now - std::time::Duration::from_secs(10); // Reset
                                 
-                                let is_rec = *state_cb.is_recording.lock();
+                                let is_rec = *state.is_recording.lock();
                                 if !is_rec {
-                                    let state_start = Arc::clone(&state_cb);
+                                    // Kayıt başlat + sessizlik watchdog'u kur
+                                    let state_start = Arc::clone(&state);
                                     std::thread::spawn(move || {
                                         match state_start.audio_engine.lock().start_recording() {
                                             Ok(_) => {
@@ -758,38 +576,18 @@ pub fn run() {
                                                 *state_start.is_recording.lock() = true;
                                                 println!("🎙️  Fn kayıt başladı (hedef: {:?})", state_start.source_app.lock());
                                                 notify("🎙️ Kayıt", "Konuşun, 30s sessizlikte otomatik durur");
-                                                // Watchdog: 3s sessizlik → segment flush, 30s → kapat
+                                                
+                                                // Sessizlik watchdog: her 2s kontrol, 30s sessizlikte durdur
                                                 let state_wd = Arc::clone(&state_start);
                                                 std::thread::spawn(move || {
-                                                    let mut total_silence: f64 = 0.0;
-                                                    let mut had_voice = false; // Hiç konuşma oldu mu
-                                                    let mut segment_flushed = false; // Bu segment flush edildi mi
                                                     loop {
-                                                        std::thread::sleep(std::time::Duration::from_millis(500));
+                                                        std::thread::sleep(std::time::Duration::from_secs(2));
                                                         let is_rec = *state_wd.is_recording.lock();
-                                                        if !is_rec { break; }
-                                                        
+                                                        if !is_rec {
+                                                            break; // Kullanıcı zaten durdurdu
+                                                        }
                                                         let silence_secs = state_wd.audio_engine.lock().seconds_since_voice();
-                                                        
-                                                        if silence_secs < 1.0 {
-                                                            // Konuşma var
-                                                            had_voice = true;
-                                                            segment_flushed = false;
-                                                            total_silence = 0.0;
-                                                        } else {
-                                                            total_silence = silence_secs;
-                                                        }
-                                                        
-                                                        // 3s sessizlik + konuşma olduysa → segment flush
-                                                        if had_voice && !segment_flushed && silence_secs >= 3.0 {
-                                                            println!("📝 3s sessizlik — segment flush");
-                                                            flush_segment(Arc::clone(&state_wd));
-                                                            segment_flushed = true;
-                                                            had_voice = false;
-                                                        }
-                                                        
-                                                        // 30s toplam sessizlik → tamamen kapat
-                                                        if total_silence >= 30.0 {
+                                                        if silence_secs >= 30.0 {
                                                             println!("🔇 30s sessizlik — otomatik durdurma");
                                                             notify("🔇 Sessizlik", "30s ses gelmedi, durduruldu");
                                                             toggle_recording(Arc::clone(&state_wd));
@@ -798,32 +596,29 @@ pub fn run() {
                                                     }
                                                 });
                                             }
-                                            Err(e) => println!("❌ Fn kayıt hatası: {}", e),
+                                            Err(e) => {
+                                                println!("❌ Fn kayıt hatası: {}", e);
+                                            }
                                         }
                                     });
                                 } else {
-                                    let state_stop = Arc::clone(&state_cb);
+                                    // Kayıt zaten varsa durdur
+                                    let state_stop = Arc::clone(&state);
                                     std::thread::spawn(move || {
                                         toggle_recording(state_stop);
                                     });
                                 }
                             } else {
+                                // İlk basış — zamanı kaydet
                                 *last = now;
                             }
                         }
+                        _ => {}
                     }
-                });
-                let block = block.copy();
-                
-                unsafe {
-                    let cls = objc::runtime::Class::get("NSEvent").unwrap();
-                    let _: id = msg_send![cls, addGlobalMonitorForEventsMatchingMask:mask handler:&*block];
+                }) {
+                    println!("❌ rdev dinleme hatası: {:?}", error);
                 }
-                // block'u leak et ki yaşamaya devam etsin
-                std::mem::forget(block);
-                println!("🎹 NSEvent global monitor aktif — Fn double-tap dinleniyor");
-            }
-
+            });
             println!("🌿 Millow başlatıldı!");
             println!("   Kısayollar: {} veya Fn tuşuna çift tıkla", hotkey_str);
             println!("   Tray menüsünden de kullanabilirsiniz");
@@ -832,13 +627,11 @@ pub fn run() {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.hide().unwrap();
             }
-            app_state.window_visible.store(false, std::sync::atomic::Ordering::Relaxed);
             #[cfg(target_os = "macos")]
             hide_dock();
 
             // Pencere kapatma olayını yakala — gizle, çıkma
             let app_handle = app.handle().clone();
-            let state_for_close = app_state.clone();
             if let Some(window) = app.get_webview_window("main") {
                 window.on_window_event(move |event| {
                     if let tauri::WindowEvent::CloseRequested { api, .. } = event {
@@ -847,7 +640,6 @@ pub fn run() {
                         if let Some(w) = app_handle.get_webview_window("main") {
                             let _ = w.hide();
                         }
-                        state_for_close.window_visible.store(false, std::sync::atomic::Ordering::Relaxed);
                         #[cfg(target_os = "macos")]
                         hide_dock();
                         println!("🪟 Pencere gizlendi, arka planda çalışıyor");
