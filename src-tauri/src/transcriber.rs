@@ -9,6 +9,13 @@ use serde::{Deserialize, Serialize};
 #[derive(Deserialize)]
 struct GroqResponse {
     text: Option<String>,
+    segments: Option<Vec<GroqSegment>>,
+}
+
+#[derive(Deserialize)]
+struct GroqSegment {
+    text: String,
+    no_speech_prob: f32,
 }
 
 // ── Gemini API formatları (fallback) ──
@@ -106,6 +113,7 @@ impl GeminiTranscriber {
             client: reqwest::blocking::Client::builder()
                 .timeout(std::time::Duration::from_secs(30))
                 .pool_max_idle_per_host(2)
+                .no_proxy()
                 .build()
                 .unwrap_or_else(|_| reqwest::blocking::Client::new()),
         }
@@ -126,7 +134,7 @@ impl GeminiTranscriber {
         self.single_stage_gemini(wav_bytes, mode, ctx)
     }
 
-    /// ⚡ Groq Whisper — direkt transcription, AI düzeltme yok
+    /// ⚡ Groq Whisper — iki aşamalı transkripsiyon (ASR + Gemini Refinement)
     fn groq_transcribe(
         &self,
         wav_bytes: &[u8],
@@ -148,7 +156,8 @@ impl GeminiTranscriber {
 
         let mut form = reqwest::blocking::multipart::Form::new()
             .text("model", "whisper-large-v3-turbo")
-            .text("response_format", "json")
+            .text("response_format", "verbose_json")
+            .text("temperature", "0.0")
             .part("file", reqwest::blocking::multipart::Part::bytes(wav_bytes.to_vec())
                 .file_name("audio.wav")
                 .mime_str("audio/wav")
@@ -156,6 +165,9 @@ impl GeminiTranscriber {
 
         if let Some(l) = lang {
             form = form.text("language", l.to_string());
+            form = form.text("prompt", "Bu bir Türkçe dikte kaydıdır.");
+        } else {
+            form = form.text("prompt", "This is a transcription/translation of dictation.");
         }
 
         let response = self.client
@@ -174,17 +186,34 @@ impl GeminiTranscriber {
         let groq_resp: GroqResponse = response.json()
             .map_err(|e| format!("Groq JSON hatası: {}", e))?;
 
-        let raw_text = groq_resp.text.unwrap_or_default().trim().to_string();
+        // Segment bazlı no_speech_prob filtrelemesi
+        let raw_text = if let Some(ref segments) = groq_resp.segments {
+            let mut filtered_segments = Vec::new();
+            for seg in segments {
+                if seg.no_speech_prob > 0.5 {
+                    println!("🚫 Segment no_speech_prob={:.2} filtrelendi: [{}]", seg.no_speech_prob, seg.text.trim());
+                    continue;
+                }
+                filtered_segments.push(seg.text.trim());
+            }
+            if filtered_segments.is_empty() {
+                String::new()
+            } else {
+                filtered_segments.join(" ").trim().to_string()
+            }
+        } else {
+            groq_resp.text.unwrap_or_default().trim().to_string()
+        };
         
-        // Whisper hallucination filtresi — configx27den oku
+        // Whisper hallucination filtresi — config'den oku
         let cfg_h = crate::config::MillowConfig::load().hallucination_filters;
         let hallucinations: Vec<&str> = cfg_h.iter().map(|s| s.as_str()).collect();
         // Tam eşleşme → tamamen boşalt
-        let text = if hallucinations.iter().any(|h| raw_text == *h) || raw_text.len() < 3 {
+        let mut text = if hallucinations.iter().any(|h| raw_text == *h) || raw_text.len() < 3 {
             println!("🚫 Whisper hallucination filtrelendi: [{}]", raw_text);
             String::new()
         } else {
-            // Metnin sonundaki hallucination'ları temizle
+            // Metnin sonundaki/içindeki hallucination'ları temizle
             let mut cleaned = raw_text.clone();
             for h in &hallucinations {
                 cleaned = cleaned.replace(h, "");
@@ -195,8 +224,21 @@ impl GeminiTranscriber {
             }
             cleaned
         };
+
+        // İkinci Aşama: Gemini Flash ile AI post-processing/refinement
+        if ctx.ai_editing && !text.is_empty() {
+            match self.refine_with_gemini(&text, ctx) {
+                Ok(refined) => {
+                    text = refined;
+                }
+                Err(e) => {
+                    println!("⚠️ Gemini Refinement başarısız oldu, ham metin kullanılıyor: {}", e);
+                }
+            }
+        }
+
         let elapsed = t0.elapsed().as_secs_f64();
-        println!("⚡ Groq Whisper: {:.1}s → \"{}...\"", elapsed,
+        println!("⚡ Groq Whisper + Gemini: {:.1}s → \"{}...\"", elapsed,
             &text.chars().take(60).collect::<String>());
 
         Ok(TranscribeResult {
@@ -205,6 +247,103 @@ impl GeminiTranscriber {
             action: None,
             params: None,
         })
+    }
+
+    /// OpenAI uyumlu chat endpoint'i ile metni düzenler ve temizler
+    fn refine_with_gemini(
+        &self,
+        text: &str,
+        ctx: &TranscribeContext,
+    ) -> Result<String, String> {
+        let prompt = self.build_refinement_prompt(text, ctx);
+
+        #[derive(Serialize)]
+        struct OpenAIMessage {
+            role: String,
+            content: String,
+        }
+
+        #[derive(Serialize)]
+        struct OpenAIChatRequest {
+            model: String,
+            messages: Vec<OpenAIMessage>,
+        }
+
+        #[derive(Deserialize)]
+        struct OpenAIMessageResponse {
+            content: Option<String>,
+        }
+
+        #[derive(Deserialize)]
+        struct OpenAIChoice {
+            message: OpenAIMessageResponse,
+        }
+
+        #[derive(Deserialize)]
+        struct OpenAIChatResponse {
+            choices: Option<Vec<OpenAIChoice>>,
+        }
+
+        let request = OpenAIChatRequest {
+            model: self.model.clone(),
+            messages: vec![OpenAIMessage {
+                role: "user".to_string(),
+                content: prompt,
+            }],
+        };
+
+        let url = format!("{}/v1/chat/completions", self.proxy_endpoint);
+
+        let response = self.client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .json(&request)
+            .send()
+            .map_err(|e| format!("Refinement API hatası: {}", e))?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().unwrap_or_default();
+            return Err(format!("Refinement hatası ({}): {}", status, body));
+        }
+
+        let openai_resp: OpenAIChatResponse = response.json()
+            .map_err(|e| format!("Refinement yanıt hatası: {}", e))?;
+
+        let refined_text = openai_resp
+            .choices
+            .and_then(|choices| choices.into_iter().next())
+            .map(|choice| choice.message.content.unwrap_or_default())
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+
+        Ok(refined_text)
+    }
+
+    /// Gemini düzenleme promptunu oluşturur
+    fn build_refinement_prompt(&self, text: &str, ctx: &TranscribeContext) -> String {
+        let mut prompt = String::new();
+        prompt.push_str("Sen Millow adında bir macOS sesli dikte asistanı için çalışan akıllı bir metin düzenleyicisin.\n");
+        prompt.push_str("Görevin: Bir konuşma-metin (ASR) motorundan gelen ham metni düzenlemek.\n\n");
+        prompt.push_str("Uygulayacağın Kurallar:\n");
+        prompt.push_str("1. 'ııı', 'şey', 'yani', 'hımm', 'ee', 'falan', 'hm' gibi konuşma dili doldurucu kelimelerini (filler words) tamamen temizle.\n");
+        prompt.push_str("2. Yazım, noktalama ve büyük/küçük harf hatalarını düzelt.\n");
+        prompt.push_str("3. Cümle akışını bozmadan, anlamı kesinlikle koruyarak doğal ve temiz bir metin haline getir.\n");
+        if !ctx.dictionary.is_empty() {
+            prompt.push_str(&format!("4. Kullanıcının özel terimler sözlüğü: {}. Bu kelimelerin doğru yazıldığından emin ol.\n", ctx.dictionary.join(", ")));
+        }
+        prompt.push_str(&format!("5. Yazım stili: {}.\n", match ctx.writing_style.as_str() {
+            "professional" => "Resmi, profesyonel, dilbilgisi kurallarına tam uygun.",
+            "casual" => "Günlük konuşma diline uygun, samimi ama hatasız.",
+            "technical" => "Teknik ve akademik terimleri bozmayan, net ve kesin.",
+            _ => "Olabildiğince doğal, orijinal konuşma tonunu koruyan."
+        }));
+        prompt.push_str("6. SADECE düzenlenmiş metnin kendisini döndür. Açıklama, tırnak işareti, 'İşte düzenlenmiş hal:' gibi ifadeler asla ekleme.\n\n");
+        prompt.push_str("Düzenlenecek ham metin:\n");
+        prompt.push_str(text);
+        
+        prompt
     }
 
     /// Tek aşamalı Gemini (fallback — Groq key yoksa)
@@ -248,6 +387,8 @@ impl GeminiTranscriber {
 
         let response = self.client
             .post(&url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("x-goog-api-key", &self.api_key)
             .json(&request)
             .send()
             .map_err(|e| format!("API hatası: {}", e))?;
@@ -307,5 +448,25 @@ impl GeminiTranscriber {
         }
         prompt.push_str(&format!("Üslup: {}. SADECE metni döndür.", ctx.writing_style));
         prompt
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_build_refinement_prompt() {
+        let transcriber = GeminiTranscriber::new("key", "http://127.0.0.1:8045", "gemini-3-flash");
+        let ctx = TranscribeContext {
+            ai_editing: true,
+            format_commands: true,
+            dictionary: vec!["Millow".to_string(), "Rust".to_string()],
+            writing_style: "professional".to_string(),
+            active_app: None,
+            whisper_mode: false,
+        };
+        let prompt = transcriber.build_refinement_prompt("test", &ctx);
+        assert!(prompt.contains("Millow, Rust"));
     }
 }
