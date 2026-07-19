@@ -211,12 +211,11 @@ fn apply_spoken_format_commands(text: &str) -> String {
         (r"(?iu)\byeni paragraf\b[,.]?", "\n\n"),
         (r"(?iu)\byeni satır\b[,.]?", "\n"),
         (r"(?iu)\bsoru işareti\b[,.]?", "?"),
+        (r"(?iu)\bvirgül işareti\b[,.]?", ","),
+        (r"(?iu)\bnokta işareti\b[,.]?", "."),
         (r"(?iu)\bünlem işareti\b[,.]?", "!"),
         (r"(?iu)\baç parantez\b[,.]?", "("),
         (r"(?iu)\bkapa parantez\b[,.]?", ")"),
-        (r"(?iu)\bvirgül\b[,.]?", ","),
-        (r"(?iu)\bnokta\b[,.]?", "."),
-        (r"(?iu)\bünlem\b[,.]?", "!"),
     ];
     let mut formatted = text.to_string();
     for (pattern, replacement) in rules {
@@ -300,16 +299,25 @@ fn apply_dictionary_terms(text: &str, dictionary: &[String]) -> String {
             let Ok(regex) = Regex::new(&pattern) else {
                 continue;
             };
-            output = regex
-                .replace_all(&output, |captures: &regex::Captures<'_>| {
-                    format!(
-                        "{}{}{}",
-                        captures.get(1).map_or("", |value| value.as_str()),
-                        entry.canonical,
-                        captures.get(2).map_or("", |value| value.as_str())
-                    )
-                })
-                .into_owned();
+            // Sağ sınır eşleşmeye dahil olduğundan yan yana iki terimin ilki o
+            // sınırı tüketebilir. İkinci geçiş, "milov milov" örneğinde kalan
+            // terimi yakalar; değişiklik yoksa erken çıkar.
+            for _ in 0..2 {
+                let replaced = regex
+                    .replace_all(&output, |captures: &regex::Captures<'_>| {
+                        format!(
+                            "{}{}{}",
+                            captures.get(1).map_or("", |value| value.as_str()),
+                            entry.canonical,
+                            captures.get(2).map_or("", |value| value.as_str())
+                        )
+                    })
+                    .into_owned();
+                if replaced == output {
+                    break;
+                }
+                output = replaced;
+            }
         }
     }
     output
@@ -1073,7 +1081,9 @@ mod tests {
     #[test]
     fn spoken_format_commands_are_applied_only_as_standalone_phrases() {
         assert_eq!(
-            apply_spoken_format_commands("Merhaba nokta yeni satır Bugün nasılsın soru işareti"),
+            apply_spoken_format_commands(
+                "Merhaba nokta işareti yeni satır Bugün nasılsın soru işareti"
+            ),
             "Merhaba.\nBugün nasılsın?"
         );
         assert_eq!(
@@ -1081,6 +1091,12 @@ mod tests {
             ";:"
         );
         assert_eq!(apply_spoken_format_commands("noktalama"), "noktalama");
+        assert_eq!(
+            apply_spoken_format_commands(
+                "Önemli bir nokta var, şu virgül eksik ve ünlem sözcüğü kalmalı."
+            ),
+            "Önemli bir nokta var, şu virgül eksik ve ünlem sözcüğü kalmalı."
+        );
     }
 
     #[test]
@@ -1107,6 +1123,10 @@ mod tests {
         assert_eq!(
             apply_dictionary_terms("milov ve web rtc vad kullan, milonga kalsın", &dictionary),
             "Millow ve WebRTC VAD kullan, milonga kalsın"
+        );
+        assert_eq!(
+            apply_dictionary_terms("milov milov", &dictionary),
+            "Millow Millow"
         );
         assert_eq!(apply_dictionary_terms("mılov", &dictionary), "mılov");
     }

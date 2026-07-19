@@ -258,28 +258,28 @@
     {
       "id": "format-01",
       "category": "formatting",
-      "read_aloud": "Merhaba nokta yeni satır Bugün nasılsın soru işareti",
+      "read_aloud": "Merhaba nokta işareti yeni satır Bugün nasılsın soru işareti",
       "expected": { "fast": "Merhaba.\nBugün nasılsın?", "clean": "Merhaba.\nBugün nasılsın?", "rewrite": "Merhaba.\nBugün nasılsın?" },
       "protected_terms": []
     },
     {
       "id": "format-02",
       "category": "formatting",
-      "read_aloud": "Alınacaklar iki nokta üst üste yeni satır süt virgül kahve virgül ekmek nokta",
+      "read_aloud": "Alınacaklar iki nokta üst üste yeni satır süt virgül işareti kahve virgül işareti ekmek nokta işareti",
       "expected": { "fast": "Alınacaklar:\nsüt, kahve, ekmek.", "clean": "Alınacaklar:\nsüt, kahve, ekmek.", "rewrite": "Alınacaklar:\nsüt, kahve, ekmek." },
       "protected_terms": []
     },
     {
       "id": "format-03",
       "category": "formatting",
-      "read_aloud": "Birinci bölüm bitti nokta yeni paragraf İkinci bölüme başlıyoruz nokta",
+      "read_aloud": "Birinci bölüm bitti nokta işareti yeni paragraf İkinci bölüme başlıyoruz nokta işareti",
       "expected": { "fast": "Birinci bölüm bitti.\n\nİkinci bölüme başlıyoruz.", "clean": "Birinci bölüm bitti.\n\nİkinci bölüme başlıyoruz.", "rewrite": "Birinci bölüm bitti.\n\nİkinci bölüme başlıyoruz." },
       "protected_terms": []
     },
     {
       "id": "format-04",
       "category": "formatting",
-      "read_aloud": "Bu sürüm hızlı virgül kararlı ve güvenli ünlem",
+      "read_aloud": "Bu sürüm hızlı virgül işareti kararlı ve güvenli ünlem işareti",
       "expected": { "fast": "Bu sürüm hızlı, kararlı ve güvenli!", "clean": "Bu sürüm hızlı, kararlı ve güvenli!", "rewrite": "Bu sürüm hızlı, kararlı ve güvenli!" },
       "protected_terms": []
     }
