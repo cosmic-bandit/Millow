@@ -20,3 +20,4 @@ src-tauri/target/
 # Yerel yedek klasörleri
 backup_src/
 backup_stable_*/
+benchmarks/results*.jsonl
