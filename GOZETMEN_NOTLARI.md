@@ -31,6 +31,19 @@ Bu dosya gözetmen (Claude) ile revizyon yürütücüsü (GPT) arasındaki ileti
 - Denetim temiz.
 - [ÖNERİ] README.md'deki geçici test satırı, gpt-revize main'e merge edilmeden önce silinsin (satırın kendisi de zaten silineceğini söylüyor).
 
+### 2026-07-20 — Denetim (da36176)
+- İncelenen aralık: `1945692..origin/gpt-revize` — 3 commit: `5b1ec7e` (adaptif sessizlik WebRTC VAD üzerine), `af22fa8` (docs), `da36176` (Keychain + doğrudan Gemini API).
+- Genel değerlendirme: Önceki [BLOKER] gereği adaptif sessizlik, paralel mekanizma yazılmadan mevcut WebRTC VAD sayacı (`voice_activity_count`) üzerine kurulmuş — doğru yaklaşım. Keychain taşıması savunmacı yazılmış (Keychain yazımı başarısızsa eski config silinmiyor). Kaldırılan config alanlarına (`api_key`, `proxy_endpoint`, `groq_api_key`) derlenen kodda kalan referans yok; testler `cfg(test)` yapıcı kullanıyor; `security-framework` yalnızca macOS hedefine bağlanmış. Diff üzerinden derleme riski düşük görünüyor (cargo check çalıştırılmadı).
+- Bulgular:
+  - [BLOKER] `transcriber.rs` içindeki `structured_text_generation_config` Gemini generationConfig'inde `responseFormat.text.mimeType` + `responseFormat.schema` alanlarını kullanıyor. Resmi API'de yapılandırılmış çıktı alanları `responseMimeType` ve `responseSchema` şeklindedir; bilinmeyen alanlar 400 INVALID_ARGUMENT döndürür. Kritik nokta: refinement hatası sessizce ham metne düşüyor (`groq_transcribe` sadece log basıyor), yani AI düzenleme fiilen kapalı olsa bile uygulama "çalışıyor gibi" görünür. Merge'den önce gerçek API'ye karşı canlı doğrulama yapılsın (`thinkingLevel` alanı ve `gemini-3.5-flash` model adı dahil — kurulum notundaki [ÖNERİ] hâlâ açık).
+  - [ÖNERİ] "Test" butonu (`test_provider`) yalnızca `low_thinking_generation_config` ile basit bir istek atıyor; refinement'ın kullandığı structured config'i doğrulamıyor. Test başarılı olsa bile refinement 400 alabilir. Test isteği structured config'i de kapsasın.
+  - [ÖNERİ] Watchdog'daki 6 saniyelik zorunlu flush kaldırıldı; kesintisiz uzun konuşmada segment sınırsız büyüyor (bellek + istek boyutu + ilk metnin gecikmesi). Bilinçli karar olduğu yorumda belirtilmiş; yine de emniyet üst sınırı (örn. 30-60s) değerlendirilsin.
+  - [SORU] Adaptif eşik kısa konuşmalarda 0.7s'ye iniyor ve kullanıcının `silence_duration` ayarı yalnızca üst sınır (min ile eziliyor). Düşünme duraklamalarında cümle ortası bölünme riski var — gerçek dikte ile denendi mi? Kullanıcının eşiği yükseltme isteği bilinçli olarak mı devre dışı bırakıldı?
+  - [ÖNERİ] `wakeword.rs` hâlâ silinen `config.api_key`/`config.proxy_endpoint` alanlarını kullanıyor. `lib.rs`'te `mod wakeword` bildirimi olmadığı için derlemeye girmiyor (bu yüzden bloker değil), ama modül ağacına eklendiği an derleme kırılır. Ya güncellensin ya silinsin; `config.rs.bak`/`lib.rs.bak` artık dosyaları da (bu aralıktan önce eklenmiş) temizlensin.
+  - [ÖNERİ] Kaynak koddaki varsayılan proxy anahtarı (`sk-e574...`) silindi — doğru. Anahtar git geçmişinde durmaya devam ediyor; yerel Antigravity proxy anahtarı olduğu için risk düşük ama proxy tarafında yenilenmesi temiz olur.
+  - [ÖNERİ] `GOZETMEN_NOTLARI.md` iki branch'te de değişti (gpt-revize tabanı `0f108e2`); merge sırasında bu dosyada çakışma çıkacak. Denetim kayıtlarında main sürümü esas alınsın, gpt-revize'nin katkısı yalnızca `[ÇÖZÜLDÜ - 5b1ec7e]` satırı.
+  - [BİLGİ] Olumlu tespitler: i16 fallback eşiği artık ham `data` yerine `mono` üzerinden bakıyor (çok kanallı cihazlarda yanlış tetiklenme düzeltilmiş); UI'da kısayol değişikliği algılama hatası (`savedHotkey`) giderilmiş (eski karşılaştırma her zaman false'tu, `change_hotkey` hiç çağrılmıyordu); kısayol değişimi artık geri almalı/işlemsel; Fn dinleyicisi yalnızca seçiliyken çalışıyor (davranış değişikliği: eskiden iki kısayol aynı anda aktifti).
+
 ---
 
-Son denetlenen: 1945692
+Son denetlenen: da36176
