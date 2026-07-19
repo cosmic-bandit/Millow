@@ -191,46 +191,69 @@ pub fn flush_segment(state: Arc<AppState>) {
     });
 }
 
-/// Watchdog: sessizlik ve süreye bağlı olarak segment flush ve otomatik durdurma işlemlerini yönetir
+/// Kullanıcı ayarını üst sınır olarak koruyup konuşma uzunluğuna göre daha hızlı
+/// bir bitiş eşiği seçer. Karar yalnızca WebRTC VAD gerçek ses algıladıktan sonra
+/// kullanılır; kayıt başlangıcındaki sessizlik segment üretmez.
+fn adaptive_flush_silence(audio_duration: f64, configured_silence: f64) -> f64 {
+    let configured = configured_silence.clamp(0.5, 5.0);
+    let adaptive_target = if audio_duration < 2.0 {
+        0.7
+    } else if audio_duration < 6.0 {
+        0.85
+    } else {
+        1.0
+    };
+
+    configured.min(adaptive_target).max(0.5)
+}
+
+/// Watchdog: WebRTC VAD aktivitesi, adaptif sessizlik ve otomatik durdurma
+/// sürelerine göre segment flush işlemlerini yönetir.
 fn start_watchdog(state: Arc<AppState>) {
     std::thread::spawn(move || {
         let cfg = state.config.lock().clone();
-        let flush_threshold = cfg.silence_duration as f64;
+        let configured_flush_threshold = cfg.silence_duration as f64;
         let stop_threshold = cfg.auto_stop_duration as f64;
-        let mut total_silence: f64 = 0.0;
         let mut had_voice = false;
         let mut segment_flushed = false;
+        let mut observed_voice_count = state.audio_engine.lock().voice_activity_count();
         
         loop {
-            std::thread::sleep(std::time::Duration::from_millis(500));
+            std::thread::sleep(std::time::Duration::from_millis(100));
             let is_rec = *state.is_recording.lock();
             if !is_rec { break; }
             
-            let silence_secs = state.audio_engine.lock().seconds_since_voice();
-            let actual_rate = state.audio_engine.lock().get_actual_sample_rate();
-            let samples_count = state.audio_engine.lock().samples_len();
+            let (silence_secs, actual_rate, samples_count, voice_count) = {
+                let audio = state.audio_engine.lock();
+                (
+                    audio.seconds_since_voice(),
+                    audio.get_actual_sample_rate(),
+                    audio.samples_len(),
+                    audio.voice_activity_count(),
+                )
+            };
             let audio_duration = samples_count as f64 / actual_rate as f64;
 
-            if silence_secs < 1.0 {
+            if voice_count > observed_voice_count {
+                observed_voice_count = voice_count;
                 had_voice = true;
                 segment_flushed = false;
-                total_silence = 0.0;
-            } else {
-                total_silence = silence_secs;
             }
             
             // ── Segment Flush Kararı ──
-            // Durum A: 3 saniyeden fazla konuşma biriktiyse VE konuşmacı nefes alıp duraksadıysa (>=0.5s sessizlik)
-            // Durum B: Konuşmacı durmaksızın konuştuysa ve 6 saniyeyi aştıysa (gecikmeyi önlemek için zorunlu flush)
-            // Durum C: Kısa konuşmalarda, konuşma bittikten sonra yapılandırılmış süre (örn. 3.0s) kadar sessizlik olduysa
-            let should_flush = (audio_duration >= 3.0 && silence_secs >= 0.5)
-                || (audio_duration >= 6.0)
-                || (had_voice && !segment_flushed && silence_secs >= flush_threshold);
+            // WebRTC VAD ses algılamadıysa sessiz buffer API'ye gönderilmez.
+            // Sürekli konuşma 6 saniyede zorla kesilmez; VAD'in gerçek bir konuşma
+            // sonu/duraklama bildirmesi beklenir.
+            let flush_threshold =
+                adaptive_flush_silence(audio_duration, configured_flush_threshold);
+            let should_flush = had_voice
+                && !segment_flushed
+                && silence_secs >= flush_threshold;
 
-            if should_flush && audio_duration > 0.1 {
+            if should_flush && audio_duration >= 0.25 {
                 println!(
-                    "📝 Segment flush (audio_len={:.1}s, silence={:.1}s)",
-                    audio_duration, silence_secs
+                    "📝 VAD segment flush (audio_len={:.1}s, silence={:.2}s, threshold={:.2}s)",
+                    audio_duration, silence_secs, flush_threshold
                 );
                 flush_segment(Arc::clone(&state));
                 segment_flushed = true;
@@ -238,7 +261,7 @@ fn start_watchdog(state: Arc<AppState>) {
             }
             
             // ── Otomatik Durdurma Kararı ──
-            if total_silence >= stop_threshold {
+            if silence_secs >= stop_threshold {
                 println!("🔇 {:.0}s sessizlik — otomatik durdurma", stop_threshold);
                 notify("🔇 Sessizlik", &format!("{:.0}s ses gelmedi, durduruldu", stop_threshold));
                 toggle_recording(Arc::clone(&state));
@@ -394,7 +417,7 @@ pub fn toggle_recording(state: Arc<AppState>) {
                 *is_rec_guard = true;
                 drop(is_rec_guard); // Kilidi serbest bırak
                 println!("🎙️  Kayıt başladı!");
-                std::thread::spawn(|| { notify("🎙️ Kayıt", "3s susunca yazar, 30s susunca kapanır"); });
+                std::thread::spawn(|| { notify("🎙️ Kayıt", "Konuşma bitince yazar, 30s sessizlikte kapanır"); });
                 
                 // Watchdog'u başlat
                 start_watchdog(Arc::clone(&state));
@@ -872,7 +895,7 @@ pub fn run() {
                                                 *state_start.source_app.lock() = get_active_app();
                                                 *state_start.is_recording.lock() = true;
                                                 println!("🎙️  Fn kayıt başladı (hedef: {:?})", state_start.source_app.lock());
-                                                std::thread::spawn(|| { notify("🎙️ Kayıt", "3s susunca yazar, 30s susunca kapanır"); });
+                                                std::thread::spawn(|| { notify("🎙️ Kayıt", "Konuşma bitince yazar, 30s sessizlikte kapanır"); });
                                                 
                                                 start_watchdog(Arc::clone(&state_start));
                                             }
@@ -945,4 +968,26 @@ pub fn run() {
             api.prevent_exit();
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::adaptive_flush_silence;
+
+    #[test]
+    fn adaptive_silence_is_fast_for_short_utterances() {
+        assert_eq!(adaptive_flush_silence(1.0, 1.5), 0.7);
+    }
+
+    #[test]
+    fn adaptive_silence_grows_for_longer_utterances() {
+        assert_eq!(adaptive_flush_silence(3.0, 1.5), 0.85);
+        assert_eq!(adaptive_flush_silence(8.0, 1.5), 1.0);
+    }
+
+    #[test]
+    fn adaptive_silence_respects_configured_lower_bound() {
+        assert_eq!(adaptive_flush_silence(1.0, 0.5), 0.5);
+        assert_eq!(adaptive_flush_silence(8.0, 0.6), 0.6);
+    }
 }
