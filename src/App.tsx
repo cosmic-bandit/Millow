@@ -173,7 +173,10 @@ function App() {
     command: { label: "Komut", icon: <CommandIcon size={16} />, desc: "Sesli komut çalıştırır" },
   };
   const hotkeyLabel = config ? (HOTKEY_LABELS[config.hotkey] || config.hotkey) : "⌥ Space";
-  const editingMode = config?.editing_mode || "clean";
+  const editingMode: EditingMode = config && Object.prototype.hasOwnProperty.call(EDITING_MODE_INFO, config.editing_mode)
+    ? config.editing_mode
+    : "clean";
+  const editingModeInfo = EDITING_MODE_INFO[editingMode];
 
   const showNotif = (msg: string) => {
     setNotification(msg);
@@ -197,7 +200,9 @@ function App() {
     try {
       const result = await invoke<TranscribeResult>("stop_and_transcribe");
       setLastText(result.text || "");
-      showNotif(result.result_type === "command" ? `Komut: ${result.action}` : "Yazıldı");
+      showNotif(result.result_type === "command"
+        ? (result.action === "unknown" ? "Komut anlaşılamadı" : `Komut: ${result.action}`)
+        : "Yazıldı");
     } catch (e) {
       showNotif(`Hata: ${e}`);
     }
@@ -388,7 +393,7 @@ function App() {
                   <option value="rewrite">Yeniden Yaz</option>
                 </select>
               </label>
-              <p className="setting-help">{EDITING_MODE_INFO[editingMode].description}</p>
+              <p className="setting-help">{editingModeInfo.description}</p>
               <label className="setting-row">
                 <span>Yazım tonu</span>
                 <select value={config.writing_style} onChange={(event) => updateConfig({ writing_style: event.target.value })}>
@@ -594,11 +599,11 @@ function App() {
             </button>
           ))}
         </div>
-        <p className="mode-desc">{mode === "dictation" ? EDITING_MODE_INFO[editingMode].description : modeConfig[mode].desc}</p>
+        <p className="mode-desc">{mode === "dictation" ? editingModeInfo.description : modeConfig[mode].desc}</p>
 
         {/* Aktif Özellikler Rozeti */}
         <div className="feature-badges">
-          {config && <span className="badge">{EDITING_MODE_INFO[editingMode].label}</span>}
+          {config && <span className="badge">{editingModeInfo.label}</span>}
           {config?.format_commands && <span className="badge">Formatlama</span>}
           {config?.whisper_mode && <span className="badge">Fısıltı</span>}
           {config?.hold_to_talk && <span className="badge">Basılı Tut</span>}

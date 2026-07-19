@@ -44,14 +44,12 @@ fn hide_dock() {
     }
 }
 
-use transcriber::{GeminiTranscriber, TranscribeContext, TranscribeMode};
+use transcriber::{GeminiTranscriber, TranscribeContext, TranscribeMode, TranscribeResult};
 
 /// Uygulama durumu
 pub struct AppState {
     audio_engine: Mutex<AudioEngine>,
     config: Mutex<MillowConfig>,
-    /// Uygulama aktif mi (uyandırma kelimesiyle kontrol)
-    is_active: Mutex<bool>,
     /// Mevcut mod: "dictation", "translate", "command"
     current_mode: Mutex<String>,
     /// Kayıt başladığında aktif olan uygulama
@@ -110,6 +108,15 @@ fn configured_transcribe_mode(current_mode: &str, config: &MillowConfig) -> Tran
     }
 }
 
+fn is_unknown_command(result: &TranscribeResult) -> bool {
+    result.result_type == "command"
+        && result
+            .action
+            .as_deref()
+            .map(|action| action == "unknown")
+            .unwrap_or(true)
+}
+
 /// Segment flush: mevcut buffer'ı transkript edip yapıştır, kayda devam et
 pub fn flush_segment(state: Arc<AppState>) {
     use std::sync::atomic::Ordering;
@@ -161,7 +168,9 @@ pub fn flush_segment(state: Arc<AppState>) {
             Ok(result) => {
                 println!("📝 Segment sonuç ({:.1}s): {:?}", t_start.elapsed().as_secs_f64(), result);
                 if result.result_type == "command" {
-                    if let Some(ref action) = result.action {
+                    if is_unknown_command(&result) {
+                        notify("Komut anlaşılamadı", &result.text);
+                    } else if let Some(ref action) = result.action {
                         match commander::execute_command(action, result.params.as_deref()) {
                             Ok(message) => notify("Komut çalıştırıldı", &message),
                             Err(error) => notify("Komut hatası", &error),
@@ -366,7 +375,9 @@ pub fn toggle_recording(state: Arc<AppState>) {
                             }
                         }
                         "command" => {
-                            if let Some(ref action) = result.action {
+                            if is_unknown_command(&result) {
+                                notify("Komut anlaşılamadı", &result.text);
+                            } else if let Some(ref action) = result.action {
                                 match commander::execute_command(action, result.params.as_deref()) {
                                     Ok(msg) => {
                                         println!("✅ Komut: {} → {}", action, msg);
@@ -378,16 +389,6 @@ pub fn toggle_recording(state: Arc<AppState>) {
                                     }
                                 }
                             }
-                        }
-                        "wakeword" => {
-                            *state_internal.is_active.lock() = true;
-                            println!("🌿 Millow aktif!");
-                            notify("🌿 Millow", "Aktif — dinliyorum!");
-                        }
-                        "sleep" => {
-                            *state_internal.is_active.lock() = false;
-                            println!("😴 Millow uyuyor");
-                            notify("😴 Millow", "Uyku moduna geçildi");
                         }
                         _ => {}
                     }
@@ -492,7 +493,9 @@ async fn stop_and_transcribe(
     let last_trans = state.last_transcription.lock().clone();
     let ctx = build_context(&config, last_trans);
     let result = transcriber.transcribe(&wav_bytes, &mode, &ctx)?;
-    if result.result_type == "command" {
+    if is_unknown_command(&result) {
+        println!("ℹ️ Komut anlaşılamadı: {}", result.text);
+    } else if result.result_type == "command" {
         let action = result
             .action
             .as_deref()
@@ -713,7 +716,6 @@ pub fn run() {
     let app_state = Arc::new(AppState {
         audio_engine: Mutex::new(AudioEngine::new(sample_rate)),
         config: Mutex::new(config),
-        is_active: Mutex::new(false),
         current_mode: Mutex::new("dictation".into()),
         source_app: Mutex::new(None),
         is_recording: Mutex::new(false),
@@ -986,7 +988,8 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        adaptive_flush_silence, configured_transcribe_mode, MillowConfig, TranscribeMode,
+        adaptive_flush_silence, configured_transcribe_mode, is_unknown_command, MillowConfig,
+        TranscribeMode, TranscribeResult,
     };
 
     #[test]
@@ -1025,5 +1028,15 @@ mod tests {
             configured_transcribe_mode("translate", &config),
             TranscribeMode::Translate { target_lang } if target_lang == "de"
         ));
+    }
+
+    #[test]
+    fn unknown_commands_are_not_executed_as_errors() {
+        assert!(is_unknown_command(&TranscribeResult {
+            result_type: "command".into(),
+            text: "bugün hava güzel".into(),
+            action: Some("unknown".into()),
+            params: None,
+        }));
     }
 }

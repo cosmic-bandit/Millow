@@ -449,10 +449,10 @@ impl GeminiTranscriber {
                     contents: vec![Content {
                         role: Some("user".to_string()),
                         parts: vec![Part::Text {
-                            text: "Yanıt olarak yalnızca OK yaz.".into(),
+                            text: "JSON şemasındaki text alanında yalnızca OK döndür.".into(),
                         }],
                     }],
-                    generation_config: Some(low_thinking_generation_config()),
+                    generation_config: Some(structured_text_generation_config()),
                 };
                 let response = client
                     .post(gemini_generate_url(model))
@@ -461,15 +461,33 @@ impl GeminiTranscriber {
                     .send()
                     .map_err(|e| format!("Gemini bağlantı hatası: {e}"))?;
                 let status = response.status();
-                if status.is_success() {
-                    Ok(format!("Gemini bağlantısı başarılı ({model})"))
-                } else {
+                if !status.is_success() {
                     let body = response.text().unwrap_or_default();
-                    Err(format!(
+                    return Err(format!(
                         "Gemini doğrulama hatası ({status}): {}",
                         api_error_message(&body)
-                    ))
+                    ));
                 }
+
+                #[derive(Deserialize)]
+                struct TestResponse {
+                    text: String,
+                }
+                let gemini_response: GeminiResponse = response
+                    .json()
+                    .map_err(|error| format!("Gemini test yanıtı okunamadı: {error}"))?;
+                let structured: TestResponse =
+                    serde_json::from_str(&extract_gemini_text(gemini_response)?)
+                        .map_err(|error| format!("Gemini structured test hatası: {error}"))?;
+                if structured.text.trim() != "OK" {
+                    return Err(format!(
+                        "Gemini structured test beklenmeyen yanıt verdi: {}",
+                        structured.text.trim()
+                    ));
+                }
+                Ok(format!(
+                    "Gemini bağlantısı ve düzenleme şeması başarılı ({model})"
+                ))
             }
         }
     }

@@ -146,6 +146,22 @@ fn default_editing_mode() -> String {
     "clean".into()
 }
 
+fn normalize_model(model: &str) -> (&'static str, bool) {
+    match model {
+        "gemini-3.5-flash" => ("gemini-3.5-flash", false),
+        _ => ("gemini-3.5-flash", true),
+    }
+}
+
+fn normalize_editing_mode(mode: &str) -> (&'static str, bool) {
+    match mode {
+        "fast" => ("fast", false),
+        "clean" => ("clean", false),
+        "rewrite" => ("rewrite", false),
+        _ => ("clean", true),
+    }
+}
+
 impl Default for MillowConfig {
     fn default() -> Self {
         Self {
@@ -190,9 +206,9 @@ impl MillowConfig {
             let data = fs::read_to_string(&path).unwrap_or_default();
             let raw: serde_json::Value = serde_json::from_str(&data).unwrap_or_default();
             let mut config: Self = serde_json::from_value(raw.clone()).unwrap_or_default();
-            let legacy_model = config.model == "gemini-3-flash";
-            if legacy_model {
-                config.model = "gemini-3.5-flash".into();
+            let (supported_model, model_migrated) = normalize_model(&config.model);
+            if model_migrated {
+                config.model = supported_model.into();
             }
             let legacy_hotkey = config.hotkey == "Option+Space";
             if legacy_hotkey {
@@ -201,6 +217,11 @@ impl MillowConfig {
             let missing_editing_mode = raw.get("editing_mode").is_none();
             if missing_editing_mode && !config.ai_editing {
                 config.editing_mode = "fast".into();
+            }
+            let (supported_editing_mode, editing_mode_migrated) =
+                normalize_editing_mode(&config.editing_mode);
+            if editing_mode_migrated {
+                config.editing_mode = supported_editing_mode.into();
             }
 
             // Eski sürümlerde JSON'da tutulan gerçek anahtarları bir kez Keychain'e taşı.
@@ -246,7 +267,11 @@ impl MillowConfig {
                 }
             }
 
-            if (legacy_fields_present || legacy_model || legacy_hotkey || missing_editing_mode)
+            if (legacy_fields_present
+                || model_migrated
+                || legacy_hotkey
+                || missing_editing_mode
+                || editing_mode_migrated)
                 && safe_to_scrub
             {
                 config.save();
@@ -290,5 +315,15 @@ mod tests {
         assert_eq!(config.model, "gemini-3.5-flash");
         assert_eq!(config.hotkey, "Alt+Space");
         assert_eq!(config.editing_mode, "clean");
+    }
+
+    #[test]
+    fn unsupported_config_values_are_normalized() {
+        assert_eq!(
+            normalize_model("gemini-3.5-flash-low"),
+            ("gemini-3.5-flash", true)
+        );
+        assert_eq!(normalize_editing_mode("invalid"), ("clean", true));
+        assert_eq!(normalize_editing_mode("rewrite"), ("rewrite", false));
     }
 }
