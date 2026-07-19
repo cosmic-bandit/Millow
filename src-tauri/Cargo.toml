@@ -19,6 +19,7 @@ tauri-plugin-global-shortcut = "2"
 tauri-plugin-notification = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+regex = "1"
 
 # Ses yakalama
 cpal = "0.15"

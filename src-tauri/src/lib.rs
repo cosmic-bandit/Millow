@@ -90,12 +90,23 @@ fn get_active_app() -> Option<String> {
 fn build_context(config: &MillowConfig, last_transcription: Option<String>) -> TranscribeContext {
     TranscribeContext {
         ai_editing: config.ai_editing,
+        editing_mode: config.editing_mode.clone(),
         format_commands: config.format_commands,
         dictionary: config.custom_dictionary.clone(),
         writing_style: config.writing_style.clone(),
         active_app: get_active_app(),
         whisper_mode: config.whisper_mode,
         last_transcription,
+    }
+}
+
+fn configured_transcribe_mode(current_mode: &str, config: &MillowConfig) -> TranscribeMode {
+    match current_mode {
+        "translate" => TranscribeMode::Translate {
+            target_lang: config.translation_target.clone(),
+        },
+        "command" => TranscribeMode::Command,
+        _ => TranscribeMode::Dictation,
     }
 }
 
@@ -137,16 +148,7 @@ pub fn flush_segment(state: Arc<AppState>) {
     let duration = samples.len() as f32 / config.sample_rate as f32;
     println!("📝 Segment flush: {:.1}s ses transkript ediliyor…", duration);
     
-    let mode = {
-        let current = state.current_mode.lock().clone();
-        match current.as_str() {
-            "translate" => TranscribeMode::Translate {
-                target_lang: config.translation_target.clone(),
-            },
-            "command" => TranscribeMode::Command,
-            _ => TranscribeMode::Dictation,
-        }
-    };
+    let mode = configured_transcribe_mode(&state.current_mode.lock(), &config);
     
     let last_trans = state.last_transcription.lock().clone();
     let ctx = build_context(&config, last_trans);
@@ -158,6 +160,16 @@ pub fn flush_segment(state: Arc<AppState>) {
         match transcriber.transcribe(&wav_bytes, &mode, &ctx) {
             Ok(result) => {
                 println!("📝 Segment sonuç ({:.1}s): {:?}", t_start.elapsed().as_secs_f64(), result);
+                if result.result_type == "command" {
+                    if let Some(ref action) = result.action {
+                        match commander::execute_command(action, result.params.as_deref()) {
+                            Ok(message) => notify("Komut çalıştırıldı", &message),
+                            Err(error) => notify("Komut hatası", &error),
+                        }
+                    }
+                    state_proc.is_processing.store(false, Ordering::SeqCst);
+                    return;
+                }
                 if !result.text.is_empty() {
                     *state_proc.last_transcription.lock() = Some(result.text.clone());
                     let cfg = state_proc.config.lock().clone();
@@ -314,16 +326,7 @@ pub fn toggle_recording(state: Arc<AppState>) {
         notify("İşleniyor…", &format!("{:.1}s ses transkript ediliyor", duration));
 
         // Mod belirle
-        let mode = {
-            let current = state.current_mode.lock().clone();
-            match current.as_str() {
-                "translate" => TranscribeMode::Translate {
-                    target_lang: config.translation_target.clone(),
-                },
-                "command" => TranscribeMode::Command,
-                _ => TranscribeMode::Dictation,
-            }
-        };
+        let mode = configured_transcribe_mode(&state.current_mode.lock(), &config);
 
         // P1-P7: Bağlam oluştur
         let last_trans = state.last_transcription.lock().clone();
@@ -485,15 +488,17 @@ async fn stop_and_transcribe(
 
     let config = state.config.lock().clone();
     let transcriber = GeminiTranscriber::new(&config.model);
-    let mode = if false {
-        TranscribeMode::Command
-    } else {
-        TranscribeMode::Dictation
-    };
+    let mode = configured_transcribe_mode(&state.current_mode.lock(), &config);
     let last_trans = state.last_transcription.lock().clone();
     let ctx = build_context(&config, last_trans);
     let result = transcriber.transcribe(&wav_bytes, &mode, &ctx)?;
-    if !result.text.is_empty() {
+    if result.result_type == "command" {
+        let action = result
+            .action
+            .as_deref()
+            .ok_or("Komut eylemi belirlenemedi")?;
+        commander::execute_command(action, result.params.as_deref())?;
+    } else if !result.text.is_empty() {
         *state.last_transcription.lock() = Some(result.text.clone());
     }
     Ok(serde_json::to_value(&result).unwrap_or_default())
@@ -980,7 +985,9 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::adaptive_flush_silence;
+    use super::{
+        adaptive_flush_silence, configured_transcribe_mode, MillowConfig, TranscribeMode,
+    };
 
     #[test]
     fn adaptive_silence_is_fast_for_short_utterances() {
@@ -997,5 +1004,26 @@ mod tests {
     fn adaptive_silence_respects_configured_lower_bound() {
         assert_eq!(adaptive_flush_silence(1.0, 0.5), 0.5);
         assert_eq!(adaptive_flush_silence(8.0, 0.6), 0.6);
+    }
+
+    #[test]
+    fn ui_mode_selection_reaches_the_transcriber() {
+        let config = MillowConfig {
+            translation_target: "de".into(),
+            ..MillowConfig::default()
+        };
+
+        assert!(matches!(
+            configured_transcribe_mode("dictation", &config),
+            TranscribeMode::Dictation
+        ));
+        assert!(matches!(
+            configured_transcribe_mode("command", &config),
+            TranscribeMode::Command
+        ));
+        assert!(matches!(
+            configured_transcribe_mode("translate", &config),
+            TranscribeMode::Translate { target_lang } if target_lang == "de"
+        ));
     }
 }

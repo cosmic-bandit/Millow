@@ -35,6 +35,10 @@ pub struct MillowConfig {
     #[serde(default = "default_true")]
     pub ai_editing: bool,
 
+    /// Dikte düzenleme seviyesi: "fast", "clean", "rewrite"
+    #[serde(default = "default_editing_mode")]
+    pub editing_mode: String,
+
     // ── P2: Sesli Format Komutları ──
     /// "yeni satır", "nokta" gibi sesli komutları biçime çevir
     #[serde(default = "default_true")]
@@ -138,6 +142,10 @@ fn default_style() -> String {
     "auto".into()
 }
 
+fn default_editing_mode() -> String {
+    "clean".into()
+}
+
 impl Default for MillowConfig {
     fn default() -> Self {
         Self {
@@ -152,6 +160,7 @@ impl Default for MillowConfig {
             hotkey: "Alt+Space".into(),
             sample_rate: 16000,
             ai_editing: true,
+            editing_mode: default_editing_mode(),
             format_commands: true,
             custom_dictionary: Vec::new(),
             hold_to_talk: true,
@@ -188,6 +197,10 @@ impl MillowConfig {
             let legacy_hotkey = config.hotkey == "Option+Space";
             if legacy_hotkey {
                 config.hotkey = "Alt+Space".into();
+            }
+            let missing_editing_mode = raw.get("editing_mode").is_none();
+            if missing_editing_mode && !config.ai_editing {
+                config.editing_mode = "fast".into();
             }
 
             // Eski sürümlerde JSON'da tutulan gerçek anahtarları bir kez Keychain'e taşı.
@@ -233,7 +246,9 @@ impl MillowConfig {
                 }
             }
 
-            if (legacy_fields_present || legacy_model || legacy_hotkey) && safe_to_scrub {
+            if (legacy_fields_present || legacy_model || legacy_hotkey || missing_editing_mode)
+                && safe_to_scrub
+            {
                 config.save();
             }
 
@@ -274,5 +289,6 @@ mod tests {
         let config = MillowConfig::default();
         assert_eq!(config.model, "gemini-3.5-flash");
         assert_eq!(config.hotkey, "Alt+Space");
+        assert_eq!(config.editing_mode, "clean");
     }
 }

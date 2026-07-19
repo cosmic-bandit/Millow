@@ -57,6 +57,7 @@ interface MillowConfig {
   sample_rate: number;
   // P1-P7
   ai_editing: boolean;
+  editing_mode: EditingMode;
   format_commands: boolean;
   custom_dictionary: string[];
   hold_to_talk: boolean;
@@ -73,6 +74,7 @@ interface MillowConfig {
 type AppMode = "dictation" | "translate" | "command";
 type AppStatus = "idle" | "recording" | "processing";
 type ApiProvider = "groq" | "gemini";
+type EditingMode = "fast" | "clean" | "rewrite";
 
 interface SecretStatus {
   groq: boolean;
@@ -97,6 +99,12 @@ const HOTKEY_LABELS: Record<string, string> = {
   "Ctrl+Alt+Space": "⌃⌥ Space",
   "Cmd+Shift+Space": "⌘⇧ Space",
   FnDoubleTap: "Fn Fn",
+};
+
+const EDITING_MODE_INFO: Record<EditingMode, { label: string; description: string }> = {
+  fast: { label: "Hızlı", description: "En düşük gecikme; Groq çıktısını olduğu gibi korur." },
+  clean: { label: "Temiz", description: "Dolgu, yazım ve noktalamayı düzeltir; ifadeni korur." },
+  rewrite: { label: "Yeniden Yaz", description: "Anlamı koruyarak daha akıcı ve okunabilir hale getirir." },
 };
 
 // ── Ana Uygulama ──
@@ -165,6 +173,7 @@ function App() {
     command: { label: "Komut", icon: <CommandIcon size={16} />, desc: "Sesli komut çalıştırır" },
   };
   const hotkeyLabel = config ? (HOTKEY_LABELS[config.hotkey] || config.hotkey) : "⌥ Space";
+  const editingMode = config?.editing_mode || "clean";
 
   const showNotif = (msg: string) => {
     setNotification(msg);
@@ -367,6 +376,35 @@ function App() {
             </div>
 
             <div className="settings-group">
+              <div className="settings-group-title">Dikte Çıktısı</div>
+              <label className="setting-row">
+                <span>Düzenleme modu</span>
+                <select value={editingMode} onChange={(event) => {
+                  const nextMode = event.target.value as EditingMode;
+                  updateConfig({ editing_mode: nextMode, ai_editing: nextMode !== "fast" });
+                }}>
+                  <option value="fast">Hızlı</option>
+                  <option value="clean">Temiz</option>
+                  <option value="rewrite">Yeniden Yaz</option>
+                </select>
+              </label>
+              <p className="setting-help">{EDITING_MODE_INFO[editingMode].description}</p>
+              <label className="setting-row">
+                <span>Yazım tonu</span>
+                <select value={config.writing_style} onChange={(event) => updateConfig({ writing_style: event.target.value })}>
+                  <option value="auto">Doğal</option>
+                  <option value="professional">Profesyonel</option>
+                  <option value="casual">Günlük</option>
+                  <option value="technical">Teknik</option>
+                </select>
+              </label>
+              <label className="setting-row toggle">
+                <span>Sesli format komutları</span>
+                <input type="checkbox" checked={config.format_commands} onChange={(event) => updateConfig({ format_commands: event.target.checked })} />
+              </label>
+            </div>
+
+            <div className="settings-group">
               <div className="settings-group-title">Dil</div>
               <label className="setting-row">
                 <span>Varsayılan</span>
@@ -552,11 +590,11 @@ function App() {
             </button>
           ))}
         </div>
-        <p className="mode-desc">{modeConfig[mode].desc}</p>
+        <p className="mode-desc">{mode === "dictation" ? EDITING_MODE_INFO[editingMode].description : modeConfig[mode].desc}</p>
 
         {/* Aktif Özellikler Rozeti */}
         <div className="feature-badges">
-          {config?.ai_editing && <span className="badge">AI Düzenleme</span>}
+          {config && <span className="badge">{EDITING_MODE_INFO[editingMode].label}</span>}
           {config?.format_commands && <span className="badge">Formatlama</span>}
           {config?.whisper_mode && <span className="badge">Fısıltı</span>}
           {config?.hold_to_talk && <span className="badge">Basılı Tut</span>}
