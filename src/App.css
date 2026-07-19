@@ -30,6 +30,7 @@
 .setting-row.dictionary textarea { width: 100%; background: var(--bg-secondary); border: 0.5px solid var(--separator); border-radius: var(--radius-sm); padding: 8px 10px; font-family: var(--font); font-size: 12px; color: var(--text-primary); outline: none; resize: vertical; min-height: 80px; line-height: 1.6; }
 .setting-row.dictionary textarea::placeholder { color: var(--text-tertiary); }
 .setting-row.dictionary textarea:focus { border-color: rgba(255,255,255,0.25); }
+.dictionary-help { color: var(--text-tertiary); font-size: 11px; line-height: 1.4; }
 .app-icon { width: 20px; height: 20px; border-radius: 4px; }
 .sf-icon { flex-shrink: 0; display: inline-block; vertical-align: middle; }
 @media (max-height: 500px) { .status-orb-wrap, .status-orb { width: 60px; height: 60px; } .content { gap: 14px; padding: 16px; } }

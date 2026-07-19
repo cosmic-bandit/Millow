@@ -238,6 +238,83 @@ fn apply_spoken_format_commands(text: &str) -> String {
         .to_string()
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct DictionaryEntry {
+    canonical: String,
+    aliases: Vec<String>,
+}
+
+fn parse_dictionary_entry(value: &str) -> Option<DictionaryEntry> {
+    let (canonical, aliases) = value
+        .split_once('|')
+        .map(|(canonical, aliases)| (canonical, Some(aliases)))
+        .unwrap_or((value, None));
+    let canonical = canonical.trim();
+    if canonical.is_empty() {
+        return None;
+    }
+
+    Some(DictionaryEntry {
+        canonical: canonical.to_string(),
+        aliases: aliases
+            .into_iter()
+            .flat_map(|items| items.split(','))
+            .map(str::trim)
+            .filter(|alias| !alias.is_empty())
+            .map(str::to_string)
+            .collect(),
+    })
+}
+
+fn dictionary_prompt(dictionary: &[String]) -> String {
+    let terms = dictionary
+        .iter()
+        .filter_map(|value| parse_dictionary_entry(value))
+        .map(|entry| entry.canonical)
+        .take(40)
+        .collect::<Vec<_>>()
+        .join(", ");
+    if terms.is_empty() {
+        String::new()
+    } else {
+        format!(" Özel yazımlar: {terms}.")
+    }
+}
+
+fn apply_dictionary_terms(text: &str, dictionary: &[String]) -> String {
+    let mut output = text.to_string();
+    for entry in dictionary
+        .iter()
+        .filter_map(|value| parse_dictionary_entry(value))
+        .take(100)
+    {
+        let mut variants = entry.aliases.clone();
+        variants.push(entry.canonical.clone());
+        variants.sort_by_key(|variant| std::cmp::Reverse(variant.chars().count()));
+
+        for variant in variants {
+            let pattern = format!(
+                r"(?iu)(^|[^\p{{L}}\p{{N}}_])(?:{})($|[^\p{{L}}\p{{N}}_])",
+                regex::escape(&variant)
+            );
+            let Ok(regex) = Regex::new(&pattern) else {
+                continue;
+            };
+            output = regex
+                .replace_all(&output, |captures: &regex::Captures<'_>| {
+                    format!(
+                        "{}{}{}",
+                        captures.get(1).map_or("", |value| value.as_str()),
+                        entry.canonical,
+                        captures.get(2).map_or("", |value| value.as_str())
+                    )
+                })
+                .into_owned();
+        }
+    }
+    output
+}
+
 /// Transkripsiyon modu
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TranscribeMode {
@@ -444,11 +521,18 @@ impl GeminiTranscriber {
                     .map_err(|e| format!("MIME hatası: {}", e))?,
             );
 
+        let prompt_hint = dictionary_prompt(&ctx.dictionary);
         if let Some(l) = lang {
             form = form.text("language", l.to_string());
-            form = form.text("prompt", "dikte, Türkçe, nokta, virgül, yeni satır.");
+            form = form.text(
+                "prompt",
+                format!("dikte, Türkçe, nokta, virgül, yeni satır.{prompt_hint}"),
+            );
         } else {
-            form = form.text("prompt", "dictation, English, period, comma, new line.");
+            form = form.text(
+                "prompt",
+                format!("dictation, English, period, comma, new line.{prompt_hint}"),
+            );
         }
 
         let response = self
@@ -515,8 +599,11 @@ impl GeminiTranscriber {
             cleaned
         };
 
-        if matches!(mode, TranscribeMode::Dictation) && ctx.format_commands {
-            text = apply_spoken_format_commands(&text);
+        if matches!(mode, TranscribeMode::Dictation) {
+            text = apply_dictionary_terms(&text, &ctx.dictionary);
+            if ctx.format_commands {
+                text = apply_spoken_format_commands(&text);
+            }
         }
 
         let asr_ms = asr_started.elapsed().as_millis();
@@ -627,7 +714,7 @@ impl GeminiTranscriber {
         let response_text = extract_gemini_text(gemini_resp)?;
         let refined: RefinementResponse = serde_json::from_str(&response_text)
             .map_err(|e| format!("Refinement yapılandırılmış yanıt hatası: {e}"))?;
-        Ok(refined.text.trim().to_string())
+        Ok(apply_dictionary_terms(refined.text.trim(), &ctx.dictionary))
     }
 
     fn interpret_command_with_gemini(&self, text: &str) -> Result<TranscribeResult, String> {
@@ -821,8 +908,11 @@ impl GeminiTranscriber {
             return parse_command_response(&text);
         }
 
-        if matches!(mode, TranscribeMode::Dictation) && ctx.format_commands {
-            text = apply_spoken_format_commands(&text);
+        if matches!(mode, TranscribeMode::Dictation) {
+            text = apply_dictionary_terms(&text, &ctx.dictionary);
+            if ctx.format_commands {
+                text = apply_spoken_format_commands(&text);
+            }
         }
 
         Ok(TranscribeResult {
@@ -991,5 +1081,33 @@ mod tests {
             ";:"
         );
         assert_eq!(apply_spoken_format_commands("noktalama"), "noktalama");
+    }
+
+    #[test]
+    fn dictionary_v2_parses_aliases_and_builds_groq_hint() {
+        assert_eq!(
+            parse_dictionary_entry("Millow | milov, milo"),
+            Some(DictionaryEntry {
+                canonical: "Millow".into(),
+                aliases: vec!["milov".into(), "milo".into()],
+            })
+        );
+        assert_eq!(
+            dictionary_prompt(&["Millow | milov".into(), "Tauri".into()]),
+            " Özel yazımlar: Millow, Tauri."
+        );
+    }
+
+    #[test]
+    fn dictionary_v2_restores_canonical_terms_without_touching_substrings() {
+        let dictionary = vec![
+            "Millow | milov, milo".into(),
+            "WebRTC VAD | web rtc vad".into(),
+        ];
+        assert_eq!(
+            apply_dictionary_terms("milov ve web rtc vad kullan, milonga kalsın", &dictionary),
+            "Millow ve WebRTC VAD kullan, milonga kalsın"
+        );
+        assert_eq!(apply_dictionary_terms("mılov", &dictionary), "mılov");
     }
 }

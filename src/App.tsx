@@ -507,9 +507,13 @@ function App() {
                 <textarea
                   value={dictInput}
                   onChange={(e) => setDictInput(e.target.value)}
-                  placeholder={"Her satıra bir kelime: Tereza, Nietzsche..."}
+                  placeholder={"Millow | milov, milo\nNietzsche | niçe"}
+                  aria-describedby="dictionary-help"
                   rows={5}
                 />
+                <p id="dictionary-help" className="dictionary-help">
+                  Her satıra doğru yazımı girin. İsterseniz | sonrasına virgülle duyulabilecek biçimleri ekleyin.
+                </p>
               </div>
             </div>
 
