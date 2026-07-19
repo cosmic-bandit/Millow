@@ -4,6 +4,7 @@
 mod audio;
 mod commander;
 mod config;
+mod secrets;
 mod transcriber;
 mod typer;
 
@@ -149,11 +150,7 @@ pub fn flush_segment(state: Arc<AppState>) {
     
     let last_trans = state.last_transcription.lock().clone();
     let ctx = build_context(&config, last_trans);
-    let transcriber = Arc::new(GeminiTranscriber::new(
-        &config.api_key,
-        &config.proxy_endpoint,
-        &config.model,
-    ));
+    let transcriber = Arc::new(GeminiTranscriber::new(&config.model));
     
     let state_proc = Arc::clone(&state);
     std::thread::spawn(move || {
@@ -332,11 +329,7 @@ pub fn toggle_recording(state: Arc<AppState>) {
         let last_trans = state.last_transcription.lock().clone();
         let ctx = build_context(&config, last_trans);
 
-        let transcriber = Arc::new(GeminiTranscriber::new(
-            &config.api_key,
-            &config.proxy_endpoint,
-            &config.model,
-        ));
+        let transcriber = Arc::new(GeminiTranscriber::new(&config.model));
 
         let state_internal = Arc::clone(&state);
         let state_proc = Arc::clone(&state);
@@ -491,7 +484,7 @@ async fn stop_and_transcribe(
     }
 
     let config = state.config.lock().clone();
-    let transcriber = GeminiTranscriber::new(&config.api_key, &config.proxy_endpoint, &config.model);
+    let transcriber = GeminiTranscriber::new(&config.model);
     let mode = if false {
         TranscribeMode::Command
     } else {
@@ -524,6 +517,34 @@ fn save_config(state: tauri::State<'_, Arc<AppState>>, new_config: MillowConfig)
 }
 
 #[tauri::command]
+fn get_secret_status() -> Result<secrets::SecretStatus, String> {
+    secrets::secret_status()
+}
+
+#[tauri::command]
+fn set_api_secret(provider: String, value: String) -> Result<secrets::SecretStatus, String> {
+    let kind = secrets::SecretKind::parse(&provider)?;
+    secrets::set_secret(kind, &value)?;
+    secrets::secret_status()
+}
+
+#[tauri::command]
+fn delete_api_secret(provider: String) -> Result<secrets::SecretStatus, String> {
+    let kind = secrets::SecretKind::parse(&provider)?;
+    secrets::delete_secret(kind)?;
+    secrets::secret_status()
+}
+
+#[tauri::command]
+fn test_api_provider(
+    state: tauri::State<'_, Arc<AppState>>,
+    provider: String,
+) -> Result<String, String> {
+    let model = state.config.lock().model.clone();
+    GeminiTranscriber::test_provider(&provider, &model)
+}
+
+#[tauri::command]
 fn set_mode(state: tauri::State<'_, Arc<AppState>>, mode: String) {
     *state.current_mode.lock() = mode;
 }
@@ -533,72 +554,83 @@ fn health_check() -> String {
     "Millow çalışıyor 🌿".into()
 }
 
-#[tauri::command]
-fn change_hotkey(app: AppHandle, state: tauri::State<'_, Arc<AppState>>, new_hotkey: String) -> Result<String, String> {
-    use tauri_plugin_global_shortcut::GlobalShortcutExt;
-    
-    // Eski kısayolu kaldır
-    let old_hotkey = state.config.lock().hotkey.clone();
-    if old_hotkey != "FnDoubleTap" {
-        let _ = app.global_shortcut().unregister(old_hotkey.as_str());
-    }
-    
-    // FnDoubleTap seçildiyse global shortcut kaydetme, rdev halleder
-    if new_hotkey == "FnDoubleTap" {
-        state.config.lock().hotkey = new_hotkey.clone();
-        state.config.lock().save();
-        println!("🎹 Kısayol değiştirildi: {} → {} (rdev)", old_hotkey, new_hotkey);
-        return Ok(format!("Kısayol değiştirildi: {}", new_hotkey));
-    }
-    
-    // Yeni kısayolu kaydet
-    let state_clone = (*state).clone();
-    app.global_shortcut().on_shortcut(new_hotkey.as_str(), move |_app, _shortcut, event| {
-        let hold_mode = state_clone.config.lock().hold_to_talk;
+fn register_global_hotkey(
+    app: &AppHandle,
+    state: Arc<AppState>,
+    hotkey: &str,
+) -> Result<(), tauri_plugin_global_shortcut::Error> {
+    app.global_shortcut().on_shortcut(hotkey, move |_app, _shortcut, event| {
+        let hold_mode = state.config.lock().hold_to_talk;
         if hold_mode {
             match event.state {
                 tauri_plugin_global_shortcut::ShortcutState::Pressed => {
-                    let is_rec = *state_clone.is_recording.lock();
-                    let elapsed = state_clone.last_record_start.lock().elapsed();
+                    let is_rec = *state.is_recording.lock();
+                    let elapsed = state.last_record_start.lock().elapsed();
                     if !is_rec && elapsed.as_millis() > 500 {
-                        *state_clone.last_record_start.lock() = std::time::Instant::now();
-                        let state = state_clone.clone();
-                        std::thread::spawn(move || {
-                            match state.audio_engine.lock().start_recording() {
-                                Ok(_) => {
-                                    *state.source_app.lock() = get_active_app();
-                                    *state.is_recording.lock() = true;
-                                    println!("🎙️  Kayıt başladı (basılı tutma)");
-                                }
-                                Err(e) => println!("❌ Kayıt hatası: {}", e),
+                        *state.last_record_start.lock() = std::time::Instant::now();
+                        let state = state.clone();
+                        std::thread::spawn(move || match state.audio_engine.lock().start_recording() {
+                            Ok(_) => {
+                                *state.source_app.lock() = get_active_app();
+                                *state.is_recording.lock() = true;
+                                println!("🎙️  Kayıt başladı (basılı tutma)");
                             }
+                            Err(e) => println!("❌ Kayıt hatası: {}", e),
                         });
                     }
                 }
                 tauri_plugin_global_shortcut::ShortcutState::Released => {
-                    let is_rec = *state_clone.is_recording.lock();
-                    if is_rec {
-                        let state = state_clone.clone();
-                        std::thread::spawn(move || {
-                            toggle_recording(state);
-                        });
+                    if *state.is_recording.lock() {
+                        let state = state.clone();
+                        std::thread::spawn(move || toggle_recording(state));
                     }
                 }
             }
-        } else {
-            if event.state == tauri_plugin_global_shortcut::ShortcutState::Pressed {
-                let state = state_clone.clone();
-                std::thread::spawn(move || {
-                    toggle_recording(state);
-                });
-            }
+        } else if event.state == tauri_plugin_global_shortcut::ShortcutState::Pressed {
+            let state = state.clone();
+            std::thread::spawn(move || toggle_recording(state));
         }
-    }).map_err(|e| format!("Kısayol hatası: {}", e))?;
-    
-    // Config güncelle
-    state.config.lock().hotkey = new_hotkey.clone();
-    state.config.lock().save();
-    
+    })
+}
+
+#[tauri::command]
+fn change_hotkey(app: AppHandle, state: tauri::State<'_, Arc<AppState>>, new_hotkey: String) -> Result<String, String> {
+    use tauri_plugin_global_shortcut::GlobalShortcutExt;
+
+    let old_hotkey = state.config.lock().hotkey.clone();
+    if old_hotkey == new_hotkey {
+        return Ok(format!("Kısayol zaten aktif: {}", new_hotkey));
+    }
+
+    // Fn seçimine geçerken eski kısayol kaldırılamazsa ayarı değiştirme.
+    if new_hotkey == "FnDoubleTap" {
+        if old_hotkey != "FnDoubleTap" {
+            app.global_shortcut()
+                .unregister(old_hotkey.as_str())
+                .map_err(|e| format!("Eski kısayol kaldırılamadı: {e}"))?;
+        }
+        let mut config = state.config.lock();
+        config.hotkey = new_hotkey.clone();
+        config.save();
+        println!("🎹 Kısayol değiştirildi: {} → {} (Fn çift dokunma)", old_hotkey, new_hotkey);
+        return Ok(format!("Kısayol değiştirildi: {}", new_hotkey));
+    }
+
+    // Önce yeniyi kaydet. Başarısız olursa eski kısayol çalışmaya devam eder.
+    register_global_hotkey(&app, (*state).clone(), &new_hotkey)
+        .map_err(|e| format!("Yeni kısayol kaydedilemedi: {e}"))?;
+
+    // Yenisi hazır olduktan sonra eskiyi kaldır. Kaldırma başarısızsa yeniyi geri al.
+    if old_hotkey != "FnDoubleTap" {
+        if let Err(error) = app.global_shortcut().unregister(old_hotkey.as_str()) {
+            let _ = app.global_shortcut().unregister(new_hotkey.as_str());
+            return Err(format!("Eski kısayol kaldırılamadı: {error}"));
+        }
+    }
+
+    let mut config = state.config.lock();
+    config.hotkey = new_hotkey.clone();
+    config.save();
     println!("🎹 Kısayol değiştirildi: {} → {}", old_hotkey, new_hotkey);
     Ok(format!("Kısayol değiştirildi: {}", new_hotkey))
 }
@@ -699,6 +731,10 @@ pub fn run() {
             is_recording_cmd,
             get_config,
             save_config,
+            get_secret_status,
+            set_api_secret,
+            delete_api_secret,
+            test_api_provider,
             set_mode,
             health_check,
             change_hotkey,
@@ -796,55 +832,9 @@ pub fn run() {
             let state_for_shortcut = state_for_manager.clone();
             let hotkey_str = state_for_manager.config.lock().hotkey.clone();
             println!("🎹 Kısayol: {}", hotkey_str);
-            app.global_shortcut().on_shortcut(hotkey_str.as_str(), move |_app, _shortcut, event| {
-                let hold_mode = state_for_shortcut.config.lock().hold_to_talk;
-
-                if hold_mode {
-                    // P4: Basılı tutma modu — basınca kayıt, bırakınca durdur
-                    match event.state {
-                        tauri_plugin_global_shortcut::ShortcutState::Pressed => {
-                            let is_rec = *state_for_shortcut.is_recording.lock();
-                            // Debounce: 500ms içinde tekrar tetiklenmeyi engelle
-                            let elapsed = state_for_shortcut.last_record_start.lock().elapsed();
-                            if !is_rec && elapsed.as_millis() > 500 {
-                                *state_for_shortcut.last_record_start.lock() = std::time::Instant::now();
-                                let state = state_for_shortcut.clone();
-                                std::thread::spawn(move || {
-            let t_start = std::time::Instant::now();
-                                    match state.audio_engine.lock().start_recording() {
-                                        Ok(_) => {
-                                            // Kayıt başlamadan önceki aktif uygulamayı kaydet
-                *state.source_app.lock() = get_active_app();
-                *state.is_recording.lock() = true;
-                                            println!("🎙️  Kayıt başladı (basılı tutma)");
-                                        }
-                                        Err(e) => println!("❌ Kayıt hatası: {}", e),
-                                    }
-                                });
-                            }
-                        }
-                        tauri_plugin_global_shortcut::ShortcutState::Released => {
-                            let is_rec = *state_for_shortcut.is_recording.lock();
-                            if is_rec {
-                                let state = state_for_shortcut.clone();
-                                std::thread::spawn(move || {
-            let t_start = std::time::Instant::now();
-                                    toggle_recording(state);
-                                });
-                            }
-                        }
-                    }
-                } else {
-                    // Normal toggle modu
-                    if event.state == tauri_plugin_global_shortcut::ShortcutState::Pressed {
-                        let state = state_for_shortcut.clone();
-                        std::thread::spawn(move || {
-            let t_start = std::time::Instant::now();
-                            toggle_recording(state);
-                        });
-                    }
-                }
-            })?;
+            if hotkey_str != "FnDoubleTap" {
+                register_global_hotkey(app.handle(), state_for_shortcut, &hotkey_str)?;
+            }
 
             // ── Double-Tap Fn Tuşu Dinleyicisi (NSEvent global monitor) ──
             let state_for_fn = state_for_manager.clone();
@@ -870,6 +860,10 @@ pub fn run() {
                 let block = block::ConcreteBlock::new(move |event: id| {
                     // Pencere açıkken ignore et
                     if state_cb.window_visible.load(std::sync::atomic::Ordering::Relaxed) {
+                        return;
+                    }
+                    // Fn dinleyicisi süreç boyunca açık kalır ama yalnızca seçiliyse çalışır.
+                    if state_cb.config.lock().hotkey != "FnDoubleTap" {
                         return;
                     }
                     
@@ -926,16 +920,30 @@ pub fn run() {
             }
 
             println!("🌿 Millow başlatıldı!");
-            println!("   Kısayollar: {} veya Fn tuşuna çift tıkla", hotkey_str);
+            println!("   Kısayol: {}", hotkey_str);
             println!("   Tray menüsünden de kullanabilirsiniz");
 
-            // Ana pencereyi gizle ve Dock'tan kaldır (menü çubuğu uygulaması)
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.hide().unwrap();
+            // Release menü çubuğunda başlar; geliştirme sürümü UI testleri için açık kalır.
+            if cfg!(debug_assertions) {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+                app_state
+                    .window_visible
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                #[cfg(target_os = "macos")]
+                show_dock();
+            } else {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.hide();
+                }
+                app_state
+                    .window_visible
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
+                #[cfg(target_os = "macos")]
+                hide_dock();
             }
-            app_state.window_visible.store(false, std::sync::atomic::Ordering::Relaxed);
-            #[cfg(target_os = "macos")]
-            hide_dock();
 
             // Pencere kapatma olayını yakala — gizle, çıkma
             let app_handle = app.handle().clone();

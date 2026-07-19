@@ -56,3 +56,7 @@ webrtc-vad = "0.4.0"
 
 # Resampling (Ses örnekleme hızı dönüştürücü)
 rubato = "0.15"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# API anahtarlarını macOS Keychain'de saklama
+security-framework = "3.6"
