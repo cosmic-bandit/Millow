@@ -4,6 +4,20 @@
 
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
+
+static HTTP_CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
+
+fn get_http_client() -> &'static reqwest::blocking::Client {
+    HTTP_CLIENT.get_or_init(|| {
+        reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .pool_max_idle_per_host(10)
+            .no_proxy()
+            .build()
+            .unwrap_or_else(|_| reqwest::blocking::Client::new())
+    })
+}
 
 // ── Groq Whisper API yanıt formatı ──
 #[derive(Deserialize)]
@@ -90,6 +104,7 @@ pub struct TranscribeContext {
     pub writing_style: String,
     pub active_app: Option<String>,
     pub whisper_mode: bool,
+    pub last_transcription: Option<String>,
 }
 
 /// Transkripsiyon motoru
@@ -110,12 +125,7 @@ impl GeminiTranscriber {
             proxy_endpoint: proxy_endpoint.to_string(),
             model: model.to_string(),
             groq_api_key: groq_key,
-            client: reqwest::blocking::Client::builder()
-                .timeout(std::time::Duration::from_secs(30))
-                .pool_max_idle_per_host(2)
-                .no_proxy()
-                .build()
-                .unwrap_or_else(|_| reqwest::blocking::Client::new()),
+            client: get_http_client().clone(),
         }
     }
 
@@ -165,9 +175,9 @@ impl GeminiTranscriber {
 
         if let Some(l) = lang {
             form = form.text("language", l.to_string());
-            form = form.text("prompt", "Bu bir Türkçe dikte kaydıdır.");
+            form = form.text("prompt", "dikte, Türkçe, nokta, virgül, yeni satır.");
         } else {
-            form = form.text("prompt", "This is a transcription/translation of dictation.");
+            form = form.text("prompt", "dictation, English, period, comma, new line.");
         }
 
         let response = self.client
@@ -225,7 +235,7 @@ impl GeminiTranscriber {
             cleaned
         };
 
-        // İkinci Aşama: Gemini Flash ile AI post-processing/refinement
+        // İkinci Aşama: Gemini ile AI post-processing/refinement
         if ctx.ai_editing && !text.is_empty() {
             match self.refine_with_gemini(&text, ctx) {
                 Ok(refined) => {
@@ -297,6 +307,7 @@ impl GeminiTranscriber {
         let response = self.client
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("x-goog-api-key", &self.api_key)
             .json(&request)
             .send()
             .map_err(|e| format!("Refinement API hatası: {}", e))?;
@@ -321,26 +332,34 @@ impl GeminiTranscriber {
         Ok(refined_text)
     }
 
+
     /// Gemini düzenleme promptunu oluşturur
     fn build_refinement_prompt(&self, text: &str, ctx: &TranscribeContext) -> String {
         let mut prompt = String::new();
-        prompt.push_str("Sen Millow adında bir macOS sesli dikte asistanı için çalışan akıllı bir metin düzenleyicisin.\n");
-        prompt.push_str("Görevin: Bir konuşma-metin (ASR) motorundan gelen ham metni düzenlemek.\n\n");
-        prompt.push_str("Uygulayacağın Kurallar:\n");
-        prompt.push_str("1. 'ııı', 'şey', 'yani', 'hımm', 'ee', 'falan', 'hm' gibi konuşma dili doldurucu kelimelerini (filler words) tamamen temizle.\n");
-        prompt.push_str("2. Yazım, noktalama ve büyük/küçük harf hatalarını düzelt.\n");
-        prompt.push_str("3. Cümle akışını bozmadan, anlamı kesinlikle koruyarak doğal ve temiz bir metin haline getir.\n");
+        prompt.push_str("Görevin: macOS dikte asistanı için ses tanımadan gelen ham Türkçe metni düzenlemek.\n");
+        prompt.push_str("Kurallar:\n");
+        prompt.push_str("- 'ııı, şey, yani, hımm, ee, falan' gibi doldurucu kelimeleri tamamen temizle.\n");
+        prompt.push_str("- Yazım, noktalama ve büyük/küçük harf hatalarını düzelt.\n");
+        prompt.push_str("- Anlamı koru, akıcı ve doğal hale getir.\n");
         if !ctx.dictionary.is_empty() {
-            prompt.push_str(&format!("4. Kullanıcının özel terimler sözlüğü: {}. Bu kelimelerin doğru yazıldığından emin ol.\n", ctx.dictionary.join(", ")));
+            prompt.push_str(&format!("- Özel terimler/isimler sözlüğü: {}\n", ctx.dictionary.join(", ")));
         }
-        prompt.push_str(&format!("5. Yazım stili: {}.\n", match ctx.writing_style.as_str() {
+        prompt.push_str(&format!("- Stil: {}\n", match ctx.writing_style.as_str() {
             "professional" => "Resmi, profesyonel, dilbilgisi kurallarına tam uygun.",
-            "casual" => "Günlük konuşma diline uygun, samimi ama hatasız.",
-            "technical" => "Teknik ve akademik terimleri bozmayan, net ve kesin.",
-            _ => "Olabildiğince doğal, orijinal konuşma tonunu koruyan."
+            "casual" => "Günlük konuşma diline uygun, samimi.",
+            "technical" => "Teknik ve akademik terimleri bozmayan, net.",
+            _ => "Doğal, orijinal konuşma tonunu koruyan."
         }));
-        prompt.push_str("6. SADECE düzenlenmiş metnin kendisini döndür. Açıklama, tırnak işareti, 'İşte düzenlenmiş hal:' gibi ifadeler asla ekleme.\n\n");
-        prompt.push_str("Düzenlenecek ham metin:\n");
+        prompt.push_str("- Konuşmacının kendisini düzelttiği kısımları algıla ve sadece düzeltilmiş son anlamlı hali yansıt (örn: 'iki, pardon üçte' -> 'üçte').\n");
+        prompt.push_str("- SADECE düzenlenmiş metni döndür. Açıklama, tırnak veya giriş cümlesi ekleme.\n");
+        prompt.push_str("- Eğer ham metin boşsa, anlamsızsa veya sadece gürültüden ibaretse SADECE boş bir metin döndür. Önceki cümle bağlamını asla tekrarlama veya buraya kopyalama.\n\n");
+
+        if let Some(ref last) = ctx.last_transcription {
+            prompt.push_str(&format!("Önceki cümle bağlamı:\n\"{}\"\n\n", last));
+            prompt.push_str("Önceki bağlamı zamirleri ve akışı anlamak için kullan ama yeni metne ekleme.\n\n");
+        }
+
+        prompt.push_str("Ham metin:\n");
         prompt.push_str(text);
         
         prompt
@@ -465,6 +484,7 @@ mod tests {
             writing_style: "professional".to_string(),
             active_app: None,
             whisper_mode: false,
+            last_transcription: None,
         };
         let prompt = transcriber.build_refinement_prompt("test", &ctx);
         assert!(prompt.contains("Millow, Rust"));

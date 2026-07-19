@@ -16,3 +16,7 @@ src-tauri/target/
 # Env
 .env
 .env.local
+
+# Yerel yedek klasörleri
+backup_src/
+backup_stable_*/

@@ -5,6 +5,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::Stream;
 use parking_lot::Mutex;
 use std::sync::Arc;
+use rubato::Resampler;
 
 /// Ses kayıt motoru durumu
 #[derive(Debug, Clone, PartialEq)]
@@ -17,6 +18,10 @@ pub enum RecordingState {
 struct StreamHolder(Stream);
 unsafe impl Send for StreamHolder {}
 unsafe impl Sync for StreamHolder {}
+
+struct SendVad(webrtc_vad::Vad);
+unsafe impl Send for SendVad {}
+unsafe impl Sync for SendVad {}
 
 /// Ses kayıt motoru
 pub struct AudioEngine {
@@ -101,24 +106,59 @@ impl AudioEngine {
 
         let stream = match sample_format {
             cpal::SampleFormat::I16 => {
+                let mut vad: Option<SendVad> = match device_sample_rate {
+                    8000 => Some(SendVad(webrtc_vad::Vad::new_with_rate_and_mode(
+                        webrtc_vad::SampleRate::Rate8kHz,
+                        webrtc_vad::VadMode::Aggressive,
+                    ))),
+                    16000 => Some(SendVad(webrtc_vad::Vad::new_with_rate_and_mode(
+                        webrtc_vad::SampleRate::Rate16kHz,
+                        webrtc_vad::VadMode::Aggressive,
+                    ))),
+                    32000 => Some(SendVad(webrtc_vad::Vad::new_with_rate_and_mode(
+                        webrtc_vad::SampleRate::Rate32kHz,
+                        webrtc_vad::VadMode::Aggressive,
+                    ))),
+                    48000 => Some(SendVad(webrtc_vad::Vad::new_with_rate_and_mode(
+                        webrtc_vad::SampleRate::Rate48kHz,
+                        webrtc_vad::VadMode::Aggressive,
+                    ))),
+                    _ => None,
+                };
+
+                let vad_frame_size = (device_sample_rate / 100) as usize;
+                let mut vad_buffer = Vec::new();
+
                 device.build_input_stream(
                     &config,
                     move |data: &[i16], _: &cpal::InputCallbackInfo| {
                         let current_state = state_clone.lock();
                         if *current_state == RecordingState::Recording {
-                            // Sessizlik algılama: herhangi bir sample eşiği aşıyorsa aktivite var
-                            if data.iter().any(|&s| s.abs() > silence_threshold) {
-                                *voice_ts.lock() = std::time::Instant::now();
-                            }
-                            if channels > 1 {
-                                let mono: Vec<i16> = data
-                                    .chunks(channels)
+                            let mono: Vec<i16> = if channels > 1 {
+                                data.chunks(channels)
                                     .map(|frame| frame[0])
-                                    .collect();
-                                samples.lock().extend_from_slice(&mono);
+                                    .collect()
                             } else {
-                                samples.lock().extend_from_slice(data);
+                                data.to_vec()
+                            };
+
+                            if let Some(ref mut v) = vad {
+                                vad_buffer.extend_from_slice(&mono);
+                                while vad_buffer.len() >= vad_frame_size {
+                                    let frame: Vec<i16> = vad_buffer.drain(0..vad_frame_size).collect();
+                                    match v.0.is_voice_segment(&frame) {
+                                        Ok(true) => {
+                                            *voice_ts.lock() = std::time::Instant::now();
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            } else {
+                                if data.iter().any(|&s| s.abs() > silence_threshold) {
+                                    *voice_ts.lock() = std::time::Instant::now();
+                                }
                             }
+                            samples.lock().extend_from_slice(&mono);
                         }
                     },
                     |err| eprintln!("Ses akışı hatası: {}", err),
@@ -130,14 +170,35 @@ impl AudioEngine {
                 let state_clone2 = self.state.clone();
                 let voice_ts2 = self.last_voice_activity.clone();
                 let silence_threshold_f: f32 = *self.noise_tolerance.lock();
+
+                let mut vad: Option<SendVad> = match device_sample_rate {
+                    8000 => Some(SendVad(webrtc_vad::Vad::new_with_rate_and_mode(
+                        webrtc_vad::SampleRate::Rate8kHz,
+                        webrtc_vad::VadMode::Aggressive,
+                    ))),
+                    16000 => Some(SendVad(webrtc_vad::Vad::new_with_rate_and_mode(
+                        webrtc_vad::SampleRate::Rate16kHz,
+                        webrtc_vad::VadMode::Aggressive,
+                    ))),
+                    32000 => Some(SendVad(webrtc_vad::Vad::new_with_rate_and_mode(
+                        webrtc_vad::SampleRate::Rate32kHz,
+                        webrtc_vad::VadMode::Aggressive,
+                    ))),
+                    48000 => Some(SendVad(webrtc_vad::Vad::new_with_rate_and_mode(
+                        webrtc_vad::SampleRate::Rate48kHz,
+                        webrtc_vad::VadMode::Aggressive,
+                    ))),
+                    _ => None,
+                };
+
+                let vad_frame_size = (device_sample_rate / 100) as usize;
+                let mut vad_buffer = Vec::new();
+
                 device.build_input_stream(
                     &config,
                     move |data: &[f32], _: &cpal::InputCallbackInfo| {
                         let current_state = state_clone2.lock();
                         if *current_state == RecordingState::Recording {
-                            if data.iter().any(|&s| s.abs() > silence_threshold_f) {
-                                *voice_ts2.lock() = std::time::Instant::now();
-                            }
                             let mono: Vec<i16> = if channels > 1 {
                                 data.chunks(channels)
                                     .map(|frame| (frame[0] * 32767.0).clamp(-32768.0, 32767.0) as i16)
@@ -147,6 +208,23 @@ impl AudioEngine {
                                     .map(|&s| (s * 32767.0).clamp(-32768.0, 32767.0) as i16)
                                     .collect()
                             };
+
+                            if let Some(ref mut v) = vad {
+                                vad_buffer.extend_from_slice(&mono);
+                                while vad_buffer.len() >= vad_frame_size {
+                                    let frame: Vec<i16> = vad_buffer.drain(0..vad_frame_size).collect();
+                                    match v.0.is_voice_segment(&frame) {
+                                        Ok(true) => {
+                                            *voice_ts2.lock() = std::time::Instant::now();
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            } else {
+                                if data.iter().any(|&s| s.abs() > silence_threshold_f) {
+                                    *voice_ts2.lock() = std::time::Instant::now();
+                                }
+                            }
                             samples2.lock().extend_from_slice(&mono);
                         }
                     },
@@ -194,6 +272,10 @@ impl AudioEngine {
         drained
     }
 
+    pub fn samples_len(&self) -> usize {
+        self.samples.lock().len()
+    }
+
     pub fn is_recording(&self) -> bool {
         *self.state.lock() == RecordingState::Recording
     }
@@ -208,24 +290,75 @@ impl AudioEngine {
         let target_rate: u32 = 16000;
 
         let final_samples = if source_rate != target_rate && source_rate > 0 {
-            let ratio = source_rate as f64 / target_rate as f64;
-            let new_len = (samples.len() as f64 / ratio) as usize;
-            let mut resampled = Vec::with_capacity(new_len);
+            let f32_samples: Vec<f32> = samples.iter().map(|&s| s as f32 / 32768.0).collect();
 
-            for i in 0..new_len {
-                let src_pos = i as f64 * ratio;
-                let idx = src_pos as usize;
-                let frac = src_pos - idx as f64;
+            let params = rubato::SincInterpolationParameters {
+                sinc_len: 64,
+                f_cutoff: 0.95,
+                oversampling_factor: 32,
+                interpolation: rubato::SincInterpolationType::Linear,
+                window: rubato::WindowFunction::BlackmanHarris2,
+            };
 
-                if idx + 1 < samples.len() {
-                    let s = samples[idx] as f64 * (1.0 - frac) + samples[idx + 1] as f64 * frac;
-                    resampled.push(s.clamp(-32768.0, 32767.0) as i16);
-                } else if idx < samples.len() {
-                    resampled.push(samples[idx]);
+            let ratio = target_rate as f64 / source_rate as f64;
+            let chunk_size = 1024;
+            let mut resampler = rubato::SincFixedIn::<f32>::new(
+                ratio,
+                1.0,
+                params,
+                chunk_size,
+                1, // 1 channel
+            ).map_err(|e| format!("Resampler başlatılamadı: {:?}", e))?;
+
+            let output_delay = resampler.output_delay();
+            let input_delay = (output_delay as f64 / ratio) as usize;
+
+            // Gecikmeyi kurtarmak için sonuna sessizlik ekliyoruz
+            let mut padded_samples = f32_samples;
+            padded_samples.resize(padded_samples.len() + input_delay, 0.0);
+
+            // chunk_size katı olacak şekilde sıfırlarla tamamlıyoruz
+            let rem = padded_samples.len() % chunk_size;
+            if rem > 0 {
+                padded_samples.resize(padded_samples.len() + (chunk_size - rem), 0.0);
+            }
+
+            let mut output_samples = Vec::new();
+            let mut input_buffer = vec![vec![0.0f32; chunk_size]; 1];
+
+            let mut pos = 0;
+            while pos < padded_samples.len() {
+                input_buffer[0].copy_from_slice(&padded_samples[pos..pos + chunk_size]);
+                let processed = resampler.process(&input_buffer, None)
+                    .map_err(|e| format!("Resampling hatası: {:?}", e))?;
+                output_samples.extend_from_slice(&processed[0]);
+                pos += chunk_size;
+            }
+
+            let target_len = (samples.len() as f64 * ratio) as usize;
+            let mut final_resampled = Vec::with_capacity(target_len);
+
+            // Gecikmeyi telafi edip target_len kadarını alıyoruz
+            let start_idx = output_delay;
+            let end_idx = start_idx + target_len;
+
+            if output_samples.len() >= end_idx {
+                for &s in &output_samples[start_idx..end_idx] {
+                    let s_val = s as f32;
+                    final_resampled.push((s_val * 32767.0).clamp(-32768.0, 32767.0) as i16);
+                }
+            } else {
+                for &s in output_samples.iter().skip(start_idx) {
+                    let s_val = s as f32;
+                    final_resampled.push((s_val * 32767.0).clamp(-32768.0, 32767.0) as i16);
                 }
             }
-            println!("🔄 Downsample: {}Hz → {}Hz ({} → {} samples)", source_rate, target_rate, samples.len(), resampled.len());
-            resampled
+
+            println!(
+                "🔄 Downsample (rubato): {}Hz → {}Hz ({} → {} samples, delay compensated)",
+                source_rate, target_rate, samples.len(), final_resampled.len()
+            );
+            final_resampled
         } else {
             samples.to_vec()
         };

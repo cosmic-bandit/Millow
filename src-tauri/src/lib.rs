@@ -62,6 +62,8 @@ pub struct AppState {
     window_visible: std::sync::atomic::AtomicBool,
     /// Debounce: son kayıt başlama zamanı
     last_record_start: Mutex<std::time::Instant>,
+    /// Oturum Bağlamı (son transkript edilen metin)
+    last_transcription: Mutex<Option<String>>,
 }
 
 /// P6: macOS'ta aktif uygulamanın adını al
@@ -84,7 +86,7 @@ fn get_active_app() -> Option<String> {
 }
 
 /// Config'den TranscribeContext oluştur
-fn build_context(config: &MillowConfig) -> TranscribeContext {
+fn build_context(config: &MillowConfig, last_transcription: Option<String>) -> TranscribeContext {
     TranscribeContext {
         ai_editing: config.ai_editing,
         format_commands: config.format_commands,
@@ -92,6 +94,7 @@ fn build_context(config: &MillowConfig) -> TranscribeContext {
         writing_style: config.writing_style.clone(),
         active_app: get_active_app(),
         whisper_mode: config.whisper_mode,
+        last_transcription,
     }
 }
 
@@ -144,7 +147,8 @@ pub fn flush_segment(state: Arc<AppState>) {
         }
     };
     
-    let ctx = build_context(&config);
+    let last_trans = state.last_transcription.lock().clone();
+    let ctx = build_context(&config, last_trans);
     let transcriber = Arc::new(GeminiTranscriber::new(
         &config.api_key,
         &config.proxy_endpoint,
@@ -158,6 +162,7 @@ pub fn flush_segment(state: Arc<AppState>) {
             Ok(result) => {
                 println!("📝 Segment sonuç ({:.1}s): {:?}", t_start.elapsed().as_secs_f64(), result);
                 if !result.text.is_empty() {
+                    *state_proc.last_transcription.lock() = Some(result.text.clone());
                     let cfg = state_proc.config.lock().clone();
                     let final_text = if cfg.newline_after_segment {
                         format!("{}
@@ -167,8 +172,8 @@ pub fn flush_segment(state: Arc<AppState>) {
                     };
                     match typer::AutoTyper::new() {
                         Ok(t) => {
-                            let src_app = state_proc.source_app.lock().clone();
-                            if let Err(e) = t.type_text_to_app(&final_text, src_app.as_deref()) {
+                            // Segment flushta focus vermeye gerek yok, doğrudan mevcut odağa yapıştır (hız için)
+                            if let Err(e) = t.type_text_to_app(&final_text, None) {
                                 println!("❌ Segment yazma hatası: {}", e);
                             } else {
                                 println!("✅ Segment yazıldı: {}", result.text);
@@ -186,30 +191,92 @@ pub fn flush_segment(state: Arc<AppState>) {
     });
 }
 
+/// Watchdog: sessizlik ve süreye bağlı olarak segment flush ve otomatik durdurma işlemlerini yönetir
+fn start_watchdog(state: Arc<AppState>) {
+    std::thread::spawn(move || {
+        let cfg = state.config.lock().clone();
+        let flush_threshold = cfg.silence_duration as f64;
+        let stop_threshold = cfg.auto_stop_duration as f64;
+        let mut total_silence: f64 = 0.0;
+        let mut had_voice = false;
+        let mut segment_flushed = false;
+        
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            let is_rec = *state.is_recording.lock();
+            if !is_rec { break; }
+            
+            let silence_secs = state.audio_engine.lock().seconds_since_voice();
+            let actual_rate = state.audio_engine.lock().get_actual_sample_rate();
+            let samples_count = state.audio_engine.lock().samples_len();
+            let audio_duration = samples_count as f64 / actual_rate as f64;
+
+            if silence_secs < 1.0 {
+                had_voice = true;
+                segment_flushed = false;
+                total_silence = 0.0;
+            } else {
+                total_silence = silence_secs;
+            }
+            
+            // ── Segment Flush Kararı ──
+            // Durum A: 3 saniyeden fazla konuşma biriktiyse VE konuşmacı nefes alıp duraksadıysa (>=0.5s sessizlik)
+            // Durum B: Konuşmacı durmaksızın konuştuysa ve 6 saniyeyi aştıysa (gecikmeyi önlemek için zorunlu flush)
+            // Durum C: Kısa konuşmalarda, konuşma bittikten sonra yapılandırılmış süre (örn. 3.0s) kadar sessizlik olduysa
+            let should_flush = (audio_duration >= 3.0 && silence_secs >= 0.5)
+                || (audio_duration >= 6.0)
+                || (had_voice && !segment_flushed && silence_secs >= flush_threshold);
+
+            if should_flush && audio_duration > 0.1 {
+                println!(
+                    "📝 Segment flush (audio_len={:.1}s, silence={:.1}s)",
+                    audio_duration, silence_secs
+                );
+                flush_segment(Arc::clone(&state));
+                segment_flushed = true;
+                had_voice = false;
+            }
+            
+            // ── Otomatik Durdurma Kararı ──
+            if total_silence >= stop_threshold {
+                println!("🔇 {:.0}s sessizlik — otomatik durdurma", stop_threshold);
+                notify("🔇 Sessizlik", &format!("{:.0}s ses gelmedi, durduruldu", stop_threshold));
+                toggle_recording(Arc::clone(&state));
+                break;
+            }
+        }
+    });
+}
+
 /// Kaydı başlat/durdur ve transkript et (Rust tarafında tam döngü)
 pub fn toggle_recording(state: Arc<AppState>) {
     use std::sync::atomic::Ordering;
-    if state.is_processing.load(Ordering::SeqCst) {
-        println!("⚠️  Zaten isleniyor, atlaniyor");
-        return;
-    }
-    let is_rec = *state.is_recording.lock();
+    
+    let mut is_rec_guard = state.is_recording.lock();
+    let is_rec = *is_rec_guard;
     println!("⏺️  toggle_recording çağrıldı (is_recording: {})", is_rec);
 
     if is_rec {
-        // ── Kaydı durdur & transkript et ──
-        println!("⏹️  Kayıt durduruluyor…");
-        state.is_processing.store(true, Ordering::SeqCst);
-        *state.is_recording.lock() = false;
+        // ── Durdurma işlemi: is_processing durumuna bakılmaksızın anında durdur ──
+        *is_rec_guard = false;
+        drop(is_rec_guard); // Kilidi hemen serbest bırak
 
         let samples = state.audio_engine.lock().stop_recording();
         if samples.is_empty() {
             println!("❌ Ses kaydı boş");
             notify("Ses kaydı boş", "Mikrofona konuştuğunuzdan emin olun");
-            state.is_processing.store(false, Ordering::SeqCst);
             return;
         }
 
+        // Sessizlik/gürültü kontrolü (API'ye boş gitmesini önle)
+        let rms: f64 = (samples.iter().map(|&s| (s as f64) * (s as f64)).sum::<f64>() / samples.len() as f64).sqrt();
+        let peak = samples.iter().map(|s| s.abs() as u16).max().unwrap_or(0);
+        if rms < 200.0 && peak < 400 {
+            println!("⏭️ Kayıt çok sessiz (rms={:.0}, peak={}), transkripsiyon iptal edildi", rms, peak);
+            return;
+        }
+
+        state.is_processing.store(true, Ordering::SeqCst);
         let config = state.config.lock().clone();
         let actual_rate = state.audio_engine.lock().get_actual_sample_rate();
         let wav_bytes = match AudioEngine::samples_to_wav(&samples, actual_rate) {
@@ -234,18 +301,13 @@ pub fn toggle_recording(state: Arc<AppState>) {
                     target_lang: config.translation_target.clone(),
                 },
                 "command" => TranscribeMode::Command,
-                _ => {
-                    if false {
-                        TranscribeMode::Command
-                    } else {
-                        TranscribeMode::Dictation
-                    }
-                }
+                _ => TranscribeMode::Dictation,
             }
         };
 
         // P1-P7: Bağlam oluştur
-        let ctx = build_context(&config);
+        let last_trans = state.last_transcription.lock().clone();
+        let ctx = build_context(&config, last_trans);
 
         let transcriber = Arc::new(GeminiTranscriber::new(
             &config.api_key,
@@ -263,6 +325,7 @@ pub fn toggle_recording(state: Arc<AppState>) {
                     match result.result_type.as_str() {
                         "dictation" => {
                             if !result.text.is_empty() {
+                                *state_internal.last_transcription.lock() = Some(result.text.clone());
                                 match typer::AutoTyper::new() {
                                     Ok(t) => {
                                         let src_app = state_internal.source_app.lock().clone();
@@ -318,54 +381,23 @@ pub fn toggle_recording(state: Arc<AppState>) {
             state_proc.is_processing.store(false, std::sync::atomic::Ordering::SeqCst);
         });
     } else {
-        // ── Kaydı başlat ──
+        // ── Başlatma işlemi: Eğer hala önceki işlem yazılıyorsa başlatma ──
+        if state.is_processing.load(Ordering::SeqCst) {
+            println!("⚠️  Önceki metin hala yazılıyor, yeni kayıt başlatılamaz");
+            return;
+        }
+
         match state.audio_engine.lock().start_recording() {
             Ok(_) => {
                 // Kayıt başlamadan önceki aktif uygulamayı kaydet
                 *state.source_app.lock() = get_active_app();
-                *state.is_recording.lock() = true;
+                *is_rec_guard = true;
+                drop(is_rec_guard); // Kilidi serbest bırak
                 println!("🎙️  Kayıt başladı!");
                 std::thread::spawn(|| { notify("🎙️ Kayıt", "3s susunca yazar, 30s susunca kapanır"); });
                 
-                // Watchdog: sessizlik → segment flush, uzun sessizlik → kapat
-                let state_wd = Arc::clone(&state);
-                std::thread::spawn(move || {
-                    let cfg = state_wd.config.lock().clone();
-                    let flush_threshold = cfg.silence_duration as f64;
-                    let stop_threshold = cfg.auto_stop_duration as f64;
-                    let mut total_silence: f64 = 0.0;
-                    let mut had_voice = false;
-                    let mut segment_flushed = false;
-                    loop {
-                        std::thread::sleep(std::time::Duration::from_millis(500));
-                        let is_rec = *state_wd.is_recording.lock();
-                        if !is_rec { break; }
-                        
-                        let silence_secs = state_wd.audio_engine.lock().seconds_since_voice();
-                        
-                        if silence_secs < 1.0 {
-                            had_voice = true;
-                            segment_flushed = false;
-                            total_silence = 0.0;
-                        } else {
-                            total_silence = silence_secs;
-                        }
-                        
-                        if had_voice && !segment_flushed && silence_secs >= flush_threshold {
-                            println!("📝 {:.1}s sessizlik — segment flush", flush_threshold);
-                            flush_segment(Arc::clone(&state_wd));
-                            segment_flushed = true;
-                            had_voice = false;
-                        }
-                        
-                        if total_silence >= stop_threshold {
-                            println!("🔇 {:.0}s sessizlik — otomatik durdurma", stop_threshold);
-                            notify("🔇 Sessizlik", &format!("{:.0}s ses gelmedi, durduruldu", stop_threshold));
-                            toggle_recording(Arc::clone(&state_wd));
-                            break;
-                        }
-                    }
-                });
+                // Watchdog'u başlat
+                start_watchdog(Arc::clone(&state));
             }
             Err(e) => {
                 let err_msg = e.to_string();
@@ -409,15 +441,31 @@ async fn stop_and_transcribe(
 ) -> Result<serde_json::Value, String> {
     *state.is_recording.lock() = false;
 
-    let wav_bytes = {
+    let (wav_bytes, is_silent) = {
         let mut audio = state.audio_engine.lock();
         let samples = audio.stop_recording();
         if samples.is_empty() {
             return Err("Ses kaydı boş".into());
         }
-        let actual_rate = audio.get_actual_sample_rate();
-        AudioEngine::samples_to_wav(&samples, actual_rate)?
-    }; // audio kilidi burada (await öncesinde) serbest bırakılır
+        let rms: f64 = (samples.iter().map(|&s| (s as f64) * (s as f64)).sum::<f64>() / samples.len() as f64).sqrt();
+        let peak = samples.iter().map(|s| s.abs() as u16).max().unwrap_or(0);
+        if rms < 200.0 && peak < 400 {
+            (Vec::new(), true)
+        } else {
+            let actual_rate = audio.get_actual_sample_rate();
+            (AudioEngine::samples_to_wav(&samples, actual_rate)?, false)
+        }
+    };
+
+    if is_silent {
+        println!("⏭️ [CMD] Kayıt çok sessiz, transkripsiyon atlanıyor");
+        return Ok(serde_json::json!({
+            "result_type": "dictation",
+            "text": "",
+            "action": null,
+            "params": null
+        }));
+    }
 
     let config = state.config.lock().clone();
     let transcriber = GeminiTranscriber::new(&config.api_key, &config.proxy_endpoint, &config.model);
@@ -426,8 +474,12 @@ async fn stop_and_transcribe(
     } else {
         TranscribeMode::Dictation
     };
-    let ctx = build_context(&config);
+    let last_trans = state.last_transcription.lock().clone();
+    let ctx = build_context(&config, last_trans);
     let result = transcriber.transcribe(&wav_bytes, &mode, &ctx)?;
+    if !result.text.is_empty() {
+        *state.last_transcription.lock() = Some(result.text.clone());
+    }
     Ok(serde_json::to_value(&result).unwrap_or_default())
 }
 
@@ -608,6 +660,7 @@ pub fn run() {
         is_processing: std::sync::atomic::AtomicBool::new(false),
         window_visible: std::sync::atomic::AtomicBool::new(false),
         last_record_start: Mutex::new(std::time::Instant::now()),
+        last_transcription: Mutex::new(None),
     });
 
     let state_for_manager = app_state.clone();
@@ -820,49 +873,8 @@ pub fn run() {
                                                 *state_start.is_recording.lock() = true;
                                                 println!("🎙️  Fn kayıt başladı (hedef: {:?})", state_start.source_app.lock());
                                                 std::thread::spawn(|| { notify("🎙️ Kayıt", "3s susunca yazar, 30s susunca kapanır"); });
-                                                // Watchdog: 3s sessizlik → segment flush, 30s → kapat
-                                                let state_wd = Arc::clone(&state_start);
-                                                std::thread::spawn(move || {
-                                                    let cfg = state_wd.config.lock().clone();
-                                                    let flush_threshold = cfg.silence_duration as f64;
-                                                    let stop_threshold = cfg.auto_stop_duration as f64;
-                                                    let mut total_silence: f64 = 0.0;
-                                                    let mut had_voice = false; // Hiç konuşma oldu mu
-                                                    let mut segment_flushed = false; // Bu segment flush edildi mi
-                                                    loop {
-                                                        std::thread::sleep(std::time::Duration::from_millis(500));
-                                                        let is_rec = *state_wd.is_recording.lock();
-                                                        if !is_rec { break; }
-                                                        
-                                                        let silence_secs = state_wd.audio_engine.lock().seconds_since_voice();
-                                                        
-                                                        if silence_secs < 1.0 {
-                                                            // Konuşma var
-                                                            had_voice = true;
-                                                            segment_flushed = false;
-                                                            total_silence = 0.0;
-                                                        } else {
-                                                            total_silence = silence_secs;
-                                                        }
-                                                        
-                                                        // 3s sessizlik + konuşma olduysa → segment flush
-
-                                                        if had_voice && !segment_flushed && silence_secs >= flush_threshold {
-                                                            println!("📝 3s sessizlik — segment flush");
-                                                            flush_segment(Arc::clone(&state_wd));
-                                                            segment_flushed = true;
-                                                            had_voice = false;
-                                                        }
-                                                        
-                                                        // 30s toplam sessizlik → tamamen kapat
-                                                        if total_silence >= stop_threshold {
-                                                            println!("🔇 {:.0}s sessizlik — otomatik durdurma", stop_threshold);
-                                                            notify("🔇 Sessizlik", &format!("{:.0}s ses gelmedi, durduruldu", stop_threshold));
-                                                            toggle_recording(Arc::clone(&state_wd));
-                                                            break;
-                                                        }
-                                                    }
-                                                });
+                                                
+                                                start_watchdog(Arc::clone(&state_start));
                                             }
                                             Err(e) => println!("❌ Fn kayıt hatası: {}", e),
                                         }

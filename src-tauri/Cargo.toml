@@ -50,3 +50,9 @@ core-graphics = "0.24"
 cocoa = "0.26"
 block = "0.1"
 objc = "0.2"
+
+# VAD (Ses aktivitesi algılama)
+webrtc-vad = "0.4.0"
+
+# Resampling (Ses örnekleme hızı dönüştürücü)
+rubato = "0.15"
