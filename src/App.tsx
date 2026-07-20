@@ -89,7 +89,7 @@ interface TranscribeResult {
 
 const API_PROVIDERS = [
   { id: "groq", label: "Groq Whisper", placeholder: "gsk_..." },
-  { id: "gemini", label: "Gemini 3.5 Flash", placeholder: "AIza..." },
+  { id: "gemini", label: "Gemini 3.5 Flash", placeholder: "AIza... veya AQ..." },
 ] as const;
 
 const HOTKEY_LABELS: Record<string, string> = {

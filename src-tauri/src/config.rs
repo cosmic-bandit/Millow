@@ -250,7 +250,9 @@ impl MillowConfig {
             }
 
             if let Some(gemini_key) = raw.get("api_key").and_then(|value| value.as_str()) {
-                if gemini_key.starts_with("AIza")
+                if crate::secrets::SecretKind::Gemini
+                    .validate(gemini_key)
+                    .is_ok()
                     && crate::secrets::get_secret(crate::secrets::SecretKind::Gemini)
                         .ok()
                         .flatten()

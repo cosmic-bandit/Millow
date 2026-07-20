@@ -37,12 +37,15 @@ impl SecretKind {
 
         let valid_prefix = match self {
             Self::Groq => value.starts_with("gsk_"),
-            Self::Gemini => value.starts_with("AIza"),
+            // Google AI Studio eski standart anahtarları `AIza`, yeni auth
+            // anahtarlarını ise `AQ.` önekiyle üretiyor. Gerçek geçerlilik
+            // ayrıca sağlayıcının Test isteğiyle doğrulanır.
+            Self::Gemini => value.starts_with("AIza") || value.starts_with("AQ."),
         };
         if !valid_prefix {
             return Err(match self {
                 Self::Groq => "Groq anahtarı gsk_ ile başlamalı".into(),
-                Self::Gemini => "Gemini anahtarı AIza ile başlamalı".into(),
+                Self::Gemini => "Gemini anahtarı AIza veya AQ. ile başlamalı".into(),
             });
         }
 
@@ -121,6 +124,7 @@ mod tests {
         assert!(SecretKind::Groq.validate("gsk_test").is_ok());
         assert!(SecretKind::Groq.validate("AIza_test").is_err());
         assert!(SecretKind::Gemini.validate("AIza_test").is_ok());
+        assert!(SecretKind::Gemini.validate("AQ.auth_key_test").is_ok());
         assert!(SecretKind::Gemini.validate("gsk_test").is_err());
     }
 }
