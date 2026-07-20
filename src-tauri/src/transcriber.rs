@@ -104,18 +104,13 @@ fn structured_text_generation_config() -> serde_json::Value {
         "thinkingConfig": {
             "thinkingLevel": "low"
         },
-        "responseFormat": {
-            "text": {
-                "mimeType": "application/json"
+        "responseMimeType": "application/json",
+        "responseSchema": {
+            "type": "object",
+            "properties": {
+                "text": { "type": "string" }
             },
-            "schema": {
-                "type": "object",
-                "properties": {
-                    "text": { "type": "string" }
-                },
-                "required": ["text"],
-                "additionalProperties": false
-            }
+            "required": ["text"]
         }
     })
 }
@@ -125,30 +120,25 @@ fn command_generation_config() -> serde_json::Value {
         "thinkingConfig": {
             "thinkingLevel": "low"
         },
-        "responseFormat": {
-            "text": {
-                "mimeType": "application/json"
-            },
-            "schema": {
-                "type": "object",
-                "properties": {
-                    "result_type": { "type": "string", "enum": ["command"] },
-                    "text": { "type": "string" },
-                    "action": {
-                        "type": "string",
-                        "enum": [
-                            "open_app", "screenshot", "volume_up", "volume_down", "mute",
-                            "brightness_up", "brightness_down", "dark_mode", "lock_screen",
-                            "wifi_toggle", "bluetooth_toggle", "play_pause", "next_track",
-                            "prev_track", "new_tab", "close_tab", "open_url", "select_all",
-                            "copy", "paste", "undo", "save", "set_timer", "unknown"
-                        ]
-                    },
-                    "params": { "type": "string" }
+        "responseMimeType": "application/json",
+        "responseSchema": {
+            "type": "object",
+            "properties": {
+                "result_type": { "type": "string", "enum": ["command"] },
+                "text": { "type": "string" },
+                "action": {
+                    "type": "string",
+                    "enum": [
+                        "open_app", "screenshot", "volume_up", "volume_down", "mute",
+                        "brightness_up", "brightness_down", "dark_mode", "lock_screen",
+                        "wifi_toggle", "bluetooth_toggle", "play_pause", "next_track",
+                        "prev_track", "new_tab", "close_tab", "open_url", "select_all",
+                        "copy", "paste", "undo", "save", "set_timer", "unknown"
+                    ]
                 },
-                "required": ["result_type", "text", "action", "params"],
-                "additionalProperties": false
-            }
+                "params": { "type": "string" }
+            },
+            "required": ["result_type", "text", "action", "params"]
         }
     })
 }
@@ -1015,12 +1005,17 @@ mod tests {
     #[test]
     fn structured_config_requests_json_text_field() {
         let config = structured_text_generation_config();
-        assert_eq!(
-            config["responseFormat"]["text"]["mimeType"],
-            "application/json"
-        );
-        assert_eq!(config["responseFormat"]["schema"]["required"][0], "text");
+        assert_eq!(config["responseMimeType"], "application/json");
+        assert_eq!(config["responseSchema"]["required"][0], "text");
         assert_eq!(config["thinkingConfig"]["thinkingLevel"], "low");
+        assert!(config.get("responseFormat").is_none());
+        assert!(config["responseSchema"].get("additionalProperties").is_none());
+
+        let command = command_generation_config();
+        assert_eq!(command["responseMimeType"], "application/json");
+        assert_eq!(command["responseSchema"]["required"][0], "result_type");
+        assert!(command.get("responseFormat").is_none());
+        assert!(command["responseSchema"].get("additionalProperties").is_none());
     }
 
     #[test]
