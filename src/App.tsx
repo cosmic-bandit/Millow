@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import "./App.css";
@@ -45,8 +45,6 @@ const CommandIcon = ({ size = 20, className = "" }) => (
 // ── Tipler ──
 
 interface MillowConfig {
-  api_key: string;
-  proxy_endpoint: string;
   model: string;
   default_language: string;
   translation_enabled: boolean;
@@ -59,12 +57,12 @@ interface MillowConfig {
   sample_rate: number;
   // P1-P7
   ai_editing: boolean;
+  editing_mode: EditingMode;
   format_commands: boolean;
   custom_dictionary: string[];
   hold_to_talk: boolean;
   writing_style: string;
   whisper_mode: boolean;
-  groq_api_key: string | null;
   auto_launch: boolean;
   noise_tolerance: number;
   silence_duration: number;
@@ -75,6 +73,39 @@ interface MillowConfig {
 
 type AppMode = "dictation" | "translate" | "command";
 type AppStatus = "idle" | "recording" | "processing";
+type ApiProvider = "groq" | "gemini";
+type EditingMode = "fast" | "clean" | "rewrite";
+
+interface SecretStatus {
+  groq: boolean;
+  gemini: boolean;
+}
+
+interface TranscribeResult {
+  result_type: string;
+  text: string;
+  action?: string | null;
+}
+
+const API_PROVIDERS = [
+  { id: "groq", label: "Groq Whisper", placeholder: "gsk_..." },
+  { id: "gemini", label: "Gemini 3.5 Flash", placeholder: "AIza... veya AQ..." },
+] as const;
+
+const HOTKEY_LABELS: Record<string, string> = {
+  "Alt+Space": "⌥ Space",
+  "Ctrl+Space": "⌃ Space",
+  "Shift+Space": "⇧ Space",
+  "Ctrl+Alt+Space": "⌃⌥ Space",
+  "Cmd+Shift+Space": "⌘⇧ Space",
+  FnDoubleTap: "Fn Fn",
+};
+
+const EDITING_MODE_INFO: Record<EditingMode, { label: string; description: string }> = {
+  fast: { label: "Hızlı", description: "En düşük gecikme; Groq çıktısını olduğu gibi korur." },
+  clean: { label: "Temiz", description: "Dolgu, yazım ve noktalamayı düzeltir; ifadeni korur." },
+  rewrite: { label: "Yeniden Yaz", description: "Anlamı koruyarak daha akıcı ve okunabilir hale getirir." },
+};
 
 // ── Ana Uygulama ──
 
@@ -89,6 +120,11 @@ function App() {
   const [dictInput, setDictInput] = useState(""); // custom dictionary textarea
   const [halInput, setHalInput] = useState(""); // hallucination filters textarea
   const [autoLaunch, setAutoLaunch] = useState(false);
+  const [savedHotkey, setSavedHotkey] = useState("");
+  const [secretStatus, setSecretStatus] = useState<SecretStatus>({ groq: false, gemini: false });
+  const [secretInputs, setSecretInputs] = useState<Record<ApiProvider, string>>({ groq: "", gemini: "" });
+  const [busyProvider, setBusyProvider] = useState<ApiProvider | null>(null);
+  const notificationTimer = useRef<number | undefined>(undefined);
 
   useEffect(() => {
     invoke<MillowConfig>("get_config").then((c) => {
@@ -96,8 +132,18 @@ function App() {
       setDictInput((c.custom_dictionary || []).join("\n"));
       setHalInput((c.hallucination_filters || []).join("\n"));
       setAutoLaunch(c.auto_launch || false);
+      setSavedHotkey(c.hotkey);
     });
     invoke<boolean>("get_auto_launch").then((v) => setAutoLaunch(v));
+    invoke<SecretStatus>("get_secret_status")
+      .then(setSecretStatus)
+      .catch((error) => setNotification(`Keychain okunamadı: ${error}`));
+  }, []);
+
+  useEffect(() => () => {
+    if (notificationTimer.current !== undefined) {
+      window.clearTimeout(notificationTimer.current);
+    }
   }, []);
 
   useEffect(() => {
@@ -126,10 +172,18 @@ function App() {
     translate: { label: "Çeviri", icon: <GlobeIcon size={16} />, desc: "Konuşmanız çevrilir" },
     command: { label: "Komut", icon: <CommandIcon size={16} />, desc: "Sesli komut çalıştırır" },
   };
+  const hotkeyLabel = config ? (HOTKEY_LABELS[config.hotkey] || config.hotkey) : "⌥ Space";
+  const editingMode: EditingMode = config && Object.prototype.hasOwnProperty.call(EDITING_MODE_INFO, config.editing_mode)
+    ? config.editing_mode
+    : "clean";
+  const editingModeInfo = EDITING_MODE_INFO[editingMode];
 
   const showNotif = (msg: string) => {
     setNotification(msg);
-    setTimeout(() => setNotification(""), 2500);
+    if (notificationTimer.current !== undefined) {
+      window.clearTimeout(notificationTimer.current);
+    }
+    notificationTimer.current = window.setTimeout(() => setNotification(""), 2500);
   };
 
   const startRecording = async () => {
@@ -144,9 +198,11 @@ function App() {
   const stopRecording = async () => {
     setStatus("processing");
     try {
-      const result = await invoke<any>("stop_and_transcribe");
+      const result = await invoke<TranscribeResult>("stop_and_transcribe");
       setLastText(result.text || "");
-      showNotif(result.result_type === "command" ? `Komut: ${result.action}` : "Yazıldı");
+      showNotif(result.result_type === "command"
+        ? (result.action === "unknown" ? "Komut anlaşılamadı" : `Komut: ${result.action}`)
+        : "Yazıldı");
     } catch (e) {
       showNotif(`Hata: ${e}`);
     }
@@ -157,14 +213,81 @@ function App() {
     if (config) setConfig({ ...config, ...partial });
   };
 
+  const updateSecretInput = (provider: ApiProvider, value: string) => {
+    setSecretInputs((current) => ({ ...current, [provider]: value }));
+  };
+
+  const persistApiSecret = async (provider: ApiProvider) => {
+    const value = secretInputs[provider].trim();
+    const nextStatus = await invoke<SecretStatus>("set_api_secret", { provider, value });
+    setSecretStatus(nextStatus);
+    updateSecretInput(provider, "");
+  };
+
+  const saveApiSecret = async (provider: ApiProvider) => {
+    if (!secretInputs[provider].trim()) {
+      showNotif("Önce API anahtarını girin");
+      return;
+    }
+    setBusyProvider(provider);
+    try {
+      await persistApiSecret(provider);
+      showNotif(`${provider === "groq" ? "Groq" : "Gemini"} anahtarı Keychain'e kaydedildi`);
+    } catch (error) {
+      showNotif(`Anahtar kaydedilemedi: ${error}`);
+    } finally {
+      setBusyProvider(null);
+    }
+  };
+
+  const deleteApiSecret = async (provider: ApiProvider) => {
+    setBusyProvider(provider);
+    try {
+      const nextStatus = await invoke<SecretStatus>("delete_api_secret", { provider });
+      setSecretStatus(nextStatus);
+      updateSecretInput(provider, "");
+      showNotif(`${provider === "groq" ? "Groq" : "Gemini"} anahtarı silindi`);
+    } catch (error) {
+      showNotif(`Anahtar silinemedi: ${error}`);
+    } finally {
+      setBusyProvider(null);
+    }
+  };
+
+  const testApiProvider = async (provider: ApiProvider) => {
+    setBusyProvider(provider);
+    try {
+      const message = await invoke<string>("test_api_provider", { provider });
+      showNotif(message);
+    } catch (error) {
+      showNotif(`Bağlantı başarısız: ${error}`);
+    } finally {
+      setBusyProvider(null);
+    }
+  };
+
   const saveSettings = async () => {
     if (config) {
+      try {
+        for (const provider of API_PROVIDERS) {
+          if (secretInputs[provider.id].trim()) {
+            setBusyProvider(provider.id);
+            await persistApiSecret(provider.id);
+          }
+        }
+      } catch (error) {
+        showNotif(`Anahtar kaydedilemedi: ${error}`);
+        return;
+      } finally {
+        setBusyProvider(null);
+      }
+
       // Dictionary textarea → array
       const dict = dictInput.split("\n").map((s) => s.trim()).filter((s) => s.length > 0);
       const hal = halInput.split("\n").map((s) => s.trim()).filter((s) => s.length > 0);
       const finalConfig = { ...config, custom_dictionary: dict, hallucination_filters: hal };
       // Kısayol değiştiyse runtime'da da güncelle
-      if (config.hotkey !== finalConfig.hotkey) {
+      if (savedHotkey !== finalConfig.hotkey) {
         try {
           await invoke("change_hotkey", { newHotkey: finalConfig.hotkey });
         } catch (e) {
@@ -174,6 +297,7 @@ function App() {
       }
       await invoke("save_config", { newConfig: finalConfig });
       setConfig(finalConfig);
+      setSavedHotkey(finalConfig.hotkey);
       showNotif("Ayarlar kaydedildi");
       setShowSettings(false);
     }
@@ -187,24 +311,101 @@ function App() {
             ‹ Geri
           </button>
           <span className="toolbar-title">Ayarlar</span>
-          <button className="toolbar-btn primary" onClick={saveSettings}>
+          <button className="toolbar-btn primary" onClick={saveSettings} disabled={busyProvider !== null}>
             Kaydet
           </button>
         </div>
 
+        {notification && <div className="notif" role="status">{notification}</div>}
+
         <div className="settings-tabs">
-          <button className={"tab-btn " + (settingsTab === "general" ? "active" : "")} onClick={() => setSettingsTab("general")}>Genel</button>
-          <button className={"tab-btn " + (settingsTab === "audio" ? "active" : "")} onClick={() => setSettingsTab("audio")}>Ses</button>
-          <button className={"tab-btn " + (settingsTab === "filters" ? "active" : "")} onClick={() => setSettingsTab("filters")}>Filtreler</button>
+          <button aria-pressed={settingsTab === "general"} className={"tab-btn " + (settingsTab === "general" ? "active" : "")} onClick={() => setSettingsTab("general")}>Genel</button>
+          <button aria-pressed={settingsTab === "audio"} className={"tab-btn " + (settingsTab === "audio" ? "active" : "")} onClick={() => setSettingsTab("audio")}>Ses</button>
+          <button aria-pressed={settingsTab === "filters"} className={"tab-btn " + (settingsTab === "filters" ? "active" : "")} onClick={() => setSettingsTab("filters")}>Filtreler</button>
         </div>
 
         <div className="settings-scroll">
           {settingsTab === "general" && (<>
             <div className="settings-group">
               <div className="settings-group-title">API Ayarları</div>
+              {API_PROVIDERS.map((provider) => (
+                <div className="setting-row api-credential" key={provider.id}>
+                  <div className="api-credential-heading">
+                    <label htmlFor={`${provider.id}-api-key`}>{provider.label}</label>
+                    <span className={`api-status ${secretStatus[provider.id] ? "saved" : "missing"}`}>
+                      {secretStatus[provider.id] ? "Keychain'de kayıtlı" : "Anahtar gerekli"}
+                    </span>
+                  </div>
+                  <div className="api-credential-controls">
+                    <input
+                      id={`${provider.id}-api-key`}
+                      type="password"
+                      value={secretInputs[provider.id]}
+                      onChange={(event) => updateSecretInput(provider.id, event.target.value)}
+                      placeholder={secretStatus[provider.id] ? "Yeni anahtarla değiştir" : provider.placeholder}
+                      autoComplete="new-password"
+                    />
+                    <button
+                      type="button"
+                      className="inline-btn primary"
+                      onClick={() => saveApiSecret(provider.id)}
+                      disabled={busyProvider !== null || !secretInputs[provider.id].trim()}
+                    >
+                      Kaydet
+                    </button>
+                    <button
+                      type="button"
+                      className="inline-btn"
+                      onClick={() => testApiProvider(provider.id)}
+                      disabled={busyProvider !== null || !secretStatus[provider.id]}
+                    >
+                      Test
+                    </button>
+                    <button
+                      type="button"
+                      className="inline-btn danger"
+                      onClick={() => deleteApiSecret(provider.id)}
+                      disabled={busyProvider !== null || !secretStatus[provider.id]}
+                    >
+                      Sil
+                    </button>
+                  </div>
+                </div>
+              ))}
+              <div className="setting-row api-model-row">
+                <label htmlFor="gemini-model">Düzenleme modeli</label>
+                <select id="gemini-model" value={config.model} onChange={(event) => updateConfig({ model: event.target.value })}>
+                  <option value="gemini-3.5-flash">Gemini 3.5 Flash</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="settings-group">
+              <div className="settings-group-title">Dikte Çıktısı</div>
               <label className="setting-row">
-                <span>Groq API Key</span>
-                <input type="password" value={config.groq_api_key || ""} onChange={(e) => updateConfig({ groq_api_key: e.target.value || null })} placeholder="gsk_..." />
+                <span>Düzenleme modu</span>
+                <select value={editingMode} onChange={(event) => {
+                  const nextMode = event.target.value as EditingMode;
+                  updateConfig({ editing_mode: nextMode, ai_editing: nextMode !== "fast" });
+                }}>
+                  <option value="fast">Hızlı</option>
+                  <option value="clean">Temiz</option>
+                  <option value="rewrite">Yeniden Yaz</option>
+                </select>
+              </label>
+              <p className="setting-help">{editingModeInfo.description}</p>
+              <label className="setting-row">
+                <span>Yazım tonu</span>
+                <select value={config.writing_style} onChange={(event) => updateConfig({ writing_style: event.target.value })}>
+                  <option value="auto">Doğal</option>
+                  <option value="professional">Profesyonel</option>
+                  <option value="casual">Günlük</option>
+                  <option value="technical">Teknik</option>
+                </select>
+              </label>
+              <label className="setting-row toggle">
+                <span>Sesli format komutları</span>
+                <input type="checkbox" checked={config.format_commands} onChange={(event) => updateConfig({ format_commands: event.target.checked })} />
               </label>
             </div>
 
@@ -311,9 +512,13 @@ function App() {
                 <textarea
                   value={dictInput}
                   onChange={(e) => setDictInput(e.target.value)}
-                  placeholder={"Her satıra bir kelime: Tereza, Nietzsche..."}
+                  placeholder={"Millow | milov, milo\nNietzsche | niçe"}
+                  aria-describedby="dictionary-help"
                   rows={5}
                 />
+                <p id="dictionary-help" className="dictionary-help">
+                  Her satıra doğru yazımı girin. İsterseniz | sonrasına virgülle duyulabilecek biçimleri ekleyin.
+                </p>
               </div>
             </div>
 
@@ -348,7 +553,7 @@ function App() {
       </div>
 
       {/* Bildirim */}
-      {notification && <div className="notif">{notification}</div>}
+      {notification && <div className="notif" role="status">{notification}</div>}
 
       <div className="content">
         {/* Durum Alanı */}
@@ -364,7 +569,7 @@ function App() {
             {status === "processing" && "İşleniyor…"}
           </div>
           <div className="status-hint">
-            {status === "idle" && (config?.hold_to_talk ? "⌥ Space basılı tutun" : "⌥ Space veya \"Millow\" deyin")}
+            {status === "idle" && (config?.hold_to_talk ? `${hotkeyLabel} basılı tutun` : `${hotkeyLabel} ile kaydı başlatın`)}
             {status === "recording" && (config?.hold_to_talk ? "Konuşun, bırakınca durdurulur" : "Konuşun, bitince tekrar basın")}
             {status === "processing" && "Transkript ediliyor"}
           </div>
@@ -386,6 +591,7 @@ function App() {
             <button
               key={m}
               className={`segment ${mode === m ? "active" : ""}`}
+              aria-pressed={mode === m}
               onClick={() => { setMode(m); invoke("set_mode", { mode: m }); }}
             >
               {modeConfig[m].icon}
@@ -393,11 +599,11 @@ function App() {
             </button>
           ))}
         </div>
-        <p className="mode-desc">{modeConfig[mode].desc}</p>
+        <p className="mode-desc">{mode === "dictation" ? editingModeInfo.description : modeConfig[mode].desc}</p>
 
         {/* Aktif Özellikler Rozeti */}
         <div className="feature-badges">
-          {config?.ai_editing && <span className="badge">AI Düzenleme</span>}
+          {config && <span className="badge">{editingModeInfo.label}</span>}
           {config?.format_commands && <span className="badge">Formatlama</span>}
           {config?.whisper_mode && <span className="badge">Fısıltı</span>}
           {config?.hold_to_talk && <span className="badge">Basılı Tut</span>}
@@ -415,7 +621,7 @@ function App() {
 
       {/* Alt Bilgi */}
       <div className="footer-bar">
-        <span className="shortcut-badge">{config?.hotkey === "FnDoubleTap" ? "Fn Fn" : (config?.hotkey || "⌥ Space")}</span>
+        <span className="shortcut-badge">{hotkeyLabel}</span>
         <span className="footer-sep">·</span>
         <span className="footer-text">{config?.hold_to_talk ? "Basılı Tut" : "Dikte"}</span>
       </div>

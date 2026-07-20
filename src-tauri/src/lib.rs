@@ -4,6 +4,7 @@
 mod audio;
 mod commander;
 mod config;
+mod secrets;
 mod transcriber;
 mod typer;
 
@@ -43,14 +44,12 @@ fn hide_dock() {
     }
 }
 
-use transcriber::{GeminiTranscriber, TranscribeContext, TranscribeMode};
+use transcriber::{GeminiTranscriber, TranscribeContext, TranscribeMode, TranscribeResult};
 
 /// Uygulama durumu
 pub struct AppState {
     audio_engine: Mutex<AudioEngine>,
     config: Mutex<MillowConfig>,
-    /// Uygulama aktif mi (uyandırma kelimesiyle kontrol)
-    is_active: Mutex<bool>,
     /// Mevcut mod: "dictation", "translate", "command"
     current_mode: Mutex<String>,
     /// Kayıt başladığında aktif olan uygulama
@@ -89,6 +88,7 @@ fn get_active_app() -> Option<String> {
 fn build_context(config: &MillowConfig, last_transcription: Option<String>) -> TranscribeContext {
     TranscribeContext {
         ai_editing: config.ai_editing,
+        editing_mode: config.editing_mode.clone(),
         format_commands: config.format_commands,
         dictionary: config.custom_dictionary.clone(),
         writing_style: config.writing_style.clone(),
@@ -96,6 +96,25 @@ fn build_context(config: &MillowConfig, last_transcription: Option<String>) -> T
         whisper_mode: config.whisper_mode,
         last_transcription,
     }
+}
+
+fn configured_transcribe_mode(current_mode: &str, config: &MillowConfig) -> TranscribeMode {
+    match current_mode {
+        "translate" => TranscribeMode::Translate {
+            target_lang: config.translation_target.clone(),
+        },
+        "command" => TranscribeMode::Command,
+        _ => TranscribeMode::Dictation,
+    }
+}
+
+fn is_unknown_command(result: &TranscribeResult) -> bool {
+    result.result_type == "command"
+        && result
+            .action
+            .as_deref()
+            .map(|action| action == "unknown")
+            .unwrap_or(true)
 }
 
 /// Segment flush: mevcut buffer'ı transkript edip yapıştır, kayda devam et
@@ -136,24 +155,11 @@ pub fn flush_segment(state: Arc<AppState>) {
     let duration = samples.len() as f32 / config.sample_rate as f32;
     println!("📝 Segment flush: {:.1}s ses transkript ediliyor…", duration);
     
-    let mode = {
-        let current = state.current_mode.lock().clone();
-        match current.as_str() {
-            "translate" => TranscribeMode::Translate {
-                target_lang: config.translation_target.clone(),
-            },
-            "command" => TranscribeMode::Command,
-            _ => TranscribeMode::Dictation,
-        }
-    };
+    let mode = configured_transcribe_mode(&state.current_mode.lock(), &config);
     
     let last_trans = state.last_transcription.lock().clone();
     let ctx = build_context(&config, last_trans);
-    let transcriber = Arc::new(GeminiTranscriber::new(
-        &config.api_key,
-        &config.proxy_endpoint,
-        &config.model,
-    ));
+    let transcriber = Arc::new(GeminiTranscriber::new(&config.model));
     
     let state_proc = Arc::clone(&state);
     std::thread::spawn(move || {
@@ -161,6 +167,18 @@ pub fn flush_segment(state: Arc<AppState>) {
         match transcriber.transcribe(&wav_bytes, &mode, &ctx) {
             Ok(result) => {
                 println!("📝 Segment sonuç ({:.1}s): {:?}", t_start.elapsed().as_secs_f64(), result);
+                if result.result_type == "command" {
+                    if is_unknown_command(&result) {
+                        notify("Komut anlaşılamadı", &result.text);
+                    } else if let Some(ref action) = result.action {
+                        match commander::execute_command(action, result.params.as_deref()) {
+                            Ok(message) => notify("Komut çalıştırıldı", &message),
+                            Err(error) => notify("Komut hatası", &error),
+                        }
+                    }
+                    state_proc.is_processing.store(false, Ordering::SeqCst);
+                    return;
+                }
                 if !result.text.is_empty() {
                     *state_proc.last_transcription.lock() = Some(result.text.clone());
                     let cfg = state_proc.config.lock().clone();
@@ -191,46 +209,69 @@ pub fn flush_segment(state: Arc<AppState>) {
     });
 }
 
-/// Watchdog: sessizlik ve süreye bağlı olarak segment flush ve otomatik durdurma işlemlerini yönetir
+/// Kullanıcı ayarını üst sınır olarak koruyup konuşma uzunluğuna göre daha hızlı
+/// bir bitiş eşiği seçer. Karar yalnızca WebRTC VAD gerçek ses algıladıktan sonra
+/// kullanılır; kayıt başlangıcındaki sessizlik segment üretmez.
+fn adaptive_flush_silence(audio_duration: f64, configured_silence: f64) -> f64 {
+    let configured = configured_silence.clamp(0.5, 5.0);
+    let adaptive_target = if audio_duration < 2.0 {
+        0.7
+    } else if audio_duration < 6.0 {
+        0.85
+    } else {
+        1.0
+    };
+
+    configured.min(adaptive_target).max(0.5)
+}
+
+/// Watchdog: WebRTC VAD aktivitesi, adaptif sessizlik ve otomatik durdurma
+/// sürelerine göre segment flush işlemlerini yönetir.
 fn start_watchdog(state: Arc<AppState>) {
     std::thread::spawn(move || {
         let cfg = state.config.lock().clone();
-        let flush_threshold = cfg.silence_duration as f64;
+        let configured_flush_threshold = cfg.silence_duration as f64;
         let stop_threshold = cfg.auto_stop_duration as f64;
-        let mut total_silence: f64 = 0.0;
         let mut had_voice = false;
         let mut segment_flushed = false;
+        let mut observed_voice_count = state.audio_engine.lock().voice_activity_count();
         
         loop {
-            std::thread::sleep(std::time::Duration::from_millis(500));
+            std::thread::sleep(std::time::Duration::from_millis(100));
             let is_rec = *state.is_recording.lock();
             if !is_rec { break; }
             
-            let silence_secs = state.audio_engine.lock().seconds_since_voice();
-            let actual_rate = state.audio_engine.lock().get_actual_sample_rate();
-            let samples_count = state.audio_engine.lock().samples_len();
+            let (silence_secs, actual_rate, samples_count, voice_count) = {
+                let audio = state.audio_engine.lock();
+                (
+                    audio.seconds_since_voice(),
+                    audio.get_actual_sample_rate(),
+                    audio.samples_len(),
+                    audio.voice_activity_count(),
+                )
+            };
             let audio_duration = samples_count as f64 / actual_rate as f64;
 
-            if silence_secs < 1.0 {
+            if voice_count > observed_voice_count {
+                observed_voice_count = voice_count;
                 had_voice = true;
                 segment_flushed = false;
-                total_silence = 0.0;
-            } else {
-                total_silence = silence_secs;
             }
             
             // ── Segment Flush Kararı ──
-            // Durum A: 3 saniyeden fazla konuşma biriktiyse VE konuşmacı nefes alıp duraksadıysa (>=0.5s sessizlik)
-            // Durum B: Konuşmacı durmaksızın konuştuysa ve 6 saniyeyi aştıysa (gecikmeyi önlemek için zorunlu flush)
-            // Durum C: Kısa konuşmalarda, konuşma bittikten sonra yapılandırılmış süre (örn. 3.0s) kadar sessizlik olduysa
-            let should_flush = (audio_duration >= 3.0 && silence_secs >= 0.5)
-                || (audio_duration >= 6.0)
-                || (had_voice && !segment_flushed && silence_secs >= flush_threshold);
+            // WebRTC VAD ses algılamadıysa sessiz buffer API'ye gönderilmez.
+            // Sürekli konuşma 6 saniyede zorla kesilmez; VAD'in gerçek bir konuşma
+            // sonu/duraklama bildirmesi beklenir.
+            let flush_threshold =
+                adaptive_flush_silence(audio_duration, configured_flush_threshold);
+            let should_flush = had_voice
+                && !segment_flushed
+                && silence_secs >= flush_threshold;
 
-            if should_flush && audio_duration > 0.1 {
+            if should_flush && audio_duration >= 0.25 {
                 println!(
-                    "📝 Segment flush (audio_len={:.1}s, silence={:.1}s)",
-                    audio_duration, silence_secs
+                    "📝 VAD segment flush (audio_len={:.1}s, silence={:.2}s, threshold={:.2}s)",
+                    audio_duration, silence_secs, flush_threshold
                 );
                 flush_segment(Arc::clone(&state));
                 segment_flushed = true;
@@ -238,7 +279,7 @@ fn start_watchdog(state: Arc<AppState>) {
             }
             
             // ── Otomatik Durdurma Kararı ──
-            if total_silence >= stop_threshold {
+            if silence_secs >= stop_threshold {
                 println!("🔇 {:.0}s sessizlik — otomatik durdurma", stop_threshold);
                 notify("🔇 Sessizlik", &format!("{:.0}s ses gelmedi, durduruldu", stop_threshold));
                 toggle_recording(Arc::clone(&state));
@@ -294,26 +335,13 @@ pub fn toggle_recording(state: Arc<AppState>) {
         notify("İşleniyor…", &format!("{:.1}s ses transkript ediliyor", duration));
 
         // Mod belirle
-        let mode = {
-            let current = state.current_mode.lock().clone();
-            match current.as_str() {
-                "translate" => TranscribeMode::Translate {
-                    target_lang: config.translation_target.clone(),
-                },
-                "command" => TranscribeMode::Command,
-                _ => TranscribeMode::Dictation,
-            }
-        };
+        let mode = configured_transcribe_mode(&state.current_mode.lock(), &config);
 
         // P1-P7: Bağlam oluştur
         let last_trans = state.last_transcription.lock().clone();
         let ctx = build_context(&config, last_trans);
 
-        let transcriber = Arc::new(GeminiTranscriber::new(
-            &config.api_key,
-            &config.proxy_endpoint,
-            &config.model,
-        ));
+        let transcriber = Arc::new(GeminiTranscriber::new(&config.model));
 
         let state_internal = Arc::clone(&state);
         let state_proc = Arc::clone(&state);
@@ -347,7 +375,9 @@ pub fn toggle_recording(state: Arc<AppState>) {
                             }
                         }
                         "command" => {
-                            if let Some(ref action) = result.action {
+                            if is_unknown_command(&result) {
+                                notify("Komut anlaşılamadı", &result.text);
+                            } else if let Some(ref action) = result.action {
                                 match commander::execute_command(action, result.params.as_deref()) {
                                     Ok(msg) => {
                                         println!("✅ Komut: {} → {}", action, msg);
@@ -359,16 +389,6 @@ pub fn toggle_recording(state: Arc<AppState>) {
                                     }
                                 }
                             }
-                        }
-                        "wakeword" => {
-                            *state_internal.is_active.lock() = true;
-                            println!("🌿 Millow aktif!");
-                            notify("🌿 Millow", "Aktif — dinliyorum!");
-                        }
-                        "sleep" => {
-                            *state_internal.is_active.lock() = false;
-                            println!("😴 Millow uyuyor");
-                            notify("😴 Millow", "Uyku moduna geçildi");
                         }
                         _ => {}
                     }
@@ -394,7 +414,7 @@ pub fn toggle_recording(state: Arc<AppState>) {
                 *is_rec_guard = true;
                 drop(is_rec_guard); // Kilidi serbest bırak
                 println!("🎙️  Kayıt başladı!");
-                std::thread::spawn(|| { notify("🎙️ Kayıt", "3s susunca yazar, 30s susunca kapanır"); });
+                std::thread::spawn(|| { notify("🎙️ Kayıt", "Konuşma bitince yazar, 30s sessizlikte kapanır"); });
                 
                 // Watchdog'u başlat
                 start_watchdog(Arc::clone(&state));
@@ -468,16 +488,20 @@ async fn stop_and_transcribe(
     }
 
     let config = state.config.lock().clone();
-    let transcriber = GeminiTranscriber::new(&config.api_key, &config.proxy_endpoint, &config.model);
-    let mode = if false {
-        TranscribeMode::Command
-    } else {
-        TranscribeMode::Dictation
-    };
+    let transcriber = GeminiTranscriber::new(&config.model);
+    let mode = configured_transcribe_mode(&state.current_mode.lock(), &config);
     let last_trans = state.last_transcription.lock().clone();
     let ctx = build_context(&config, last_trans);
     let result = transcriber.transcribe(&wav_bytes, &mode, &ctx)?;
-    if !result.text.is_empty() {
+    if is_unknown_command(&result) {
+        println!("ℹ️ Komut anlaşılamadı: {}", result.text);
+    } else if result.result_type == "command" {
+        let action = result
+            .action
+            .as_deref()
+            .ok_or("Komut eylemi belirlenemedi")?;
+        commander::execute_command(action, result.params.as_deref())?;
+    } else if !result.text.is_empty() {
         *state.last_transcription.lock() = Some(result.text.clone());
     }
     Ok(serde_json::to_value(&result).unwrap_or_default())
@@ -501,6 +525,34 @@ fn save_config(state: tauri::State<'_, Arc<AppState>>, new_config: MillowConfig)
 }
 
 #[tauri::command]
+fn get_secret_status() -> Result<secrets::SecretStatus, String> {
+    secrets::secret_status()
+}
+
+#[tauri::command]
+fn set_api_secret(provider: String, value: String) -> Result<secrets::SecretStatus, String> {
+    let kind = secrets::SecretKind::parse(&provider)?;
+    secrets::set_secret(kind, &value)?;
+    secrets::secret_status()
+}
+
+#[tauri::command]
+fn delete_api_secret(provider: String) -> Result<secrets::SecretStatus, String> {
+    let kind = secrets::SecretKind::parse(&provider)?;
+    secrets::delete_secret(kind)?;
+    secrets::secret_status()
+}
+
+#[tauri::command]
+fn test_api_provider(
+    state: tauri::State<'_, Arc<AppState>>,
+    provider: String,
+) -> Result<String, String> {
+    let model = state.config.lock().model.clone();
+    GeminiTranscriber::test_provider(&provider, &model)
+}
+
+#[tauri::command]
 fn set_mode(state: tauri::State<'_, Arc<AppState>>, mode: String) {
     *state.current_mode.lock() = mode;
 }
@@ -510,72 +562,83 @@ fn health_check() -> String {
     "Millow çalışıyor 🌿".into()
 }
 
-#[tauri::command]
-fn change_hotkey(app: AppHandle, state: tauri::State<'_, Arc<AppState>>, new_hotkey: String) -> Result<String, String> {
-    use tauri_plugin_global_shortcut::GlobalShortcutExt;
-    
-    // Eski kısayolu kaldır
-    let old_hotkey = state.config.lock().hotkey.clone();
-    if old_hotkey != "FnDoubleTap" {
-        let _ = app.global_shortcut().unregister(old_hotkey.as_str());
-    }
-    
-    // FnDoubleTap seçildiyse global shortcut kaydetme, rdev halleder
-    if new_hotkey == "FnDoubleTap" {
-        state.config.lock().hotkey = new_hotkey.clone();
-        state.config.lock().save();
-        println!("🎹 Kısayol değiştirildi: {} → {} (rdev)", old_hotkey, new_hotkey);
-        return Ok(format!("Kısayol değiştirildi: {}", new_hotkey));
-    }
-    
-    // Yeni kısayolu kaydet
-    let state_clone = (*state).clone();
-    app.global_shortcut().on_shortcut(new_hotkey.as_str(), move |_app, _shortcut, event| {
-        let hold_mode = state_clone.config.lock().hold_to_talk;
+fn register_global_hotkey(
+    app: &AppHandle,
+    state: Arc<AppState>,
+    hotkey: &str,
+) -> Result<(), tauri_plugin_global_shortcut::Error> {
+    app.global_shortcut().on_shortcut(hotkey, move |_app, _shortcut, event| {
+        let hold_mode = state.config.lock().hold_to_talk;
         if hold_mode {
             match event.state {
                 tauri_plugin_global_shortcut::ShortcutState::Pressed => {
-                    let is_rec = *state_clone.is_recording.lock();
-                    let elapsed = state_clone.last_record_start.lock().elapsed();
+                    let is_rec = *state.is_recording.lock();
+                    let elapsed = state.last_record_start.lock().elapsed();
                     if !is_rec && elapsed.as_millis() > 500 {
-                        *state_clone.last_record_start.lock() = std::time::Instant::now();
-                        let state = state_clone.clone();
-                        std::thread::spawn(move || {
-                            match state.audio_engine.lock().start_recording() {
-                                Ok(_) => {
-                                    *state.source_app.lock() = get_active_app();
-                                    *state.is_recording.lock() = true;
-                                    println!("🎙️  Kayıt başladı (basılı tutma)");
-                                }
-                                Err(e) => println!("❌ Kayıt hatası: {}", e),
+                        *state.last_record_start.lock() = std::time::Instant::now();
+                        let state = state.clone();
+                        std::thread::spawn(move || match state.audio_engine.lock().start_recording() {
+                            Ok(_) => {
+                                *state.source_app.lock() = get_active_app();
+                                *state.is_recording.lock() = true;
+                                println!("🎙️  Kayıt başladı (basılı tutma)");
                             }
+                            Err(e) => println!("❌ Kayıt hatası: {}", e),
                         });
                     }
                 }
                 tauri_plugin_global_shortcut::ShortcutState::Released => {
-                    let is_rec = *state_clone.is_recording.lock();
-                    if is_rec {
-                        let state = state_clone.clone();
-                        std::thread::spawn(move || {
-                            toggle_recording(state);
-                        });
+                    if *state.is_recording.lock() {
+                        let state = state.clone();
+                        std::thread::spawn(move || toggle_recording(state));
                     }
                 }
             }
-        } else {
-            if event.state == tauri_plugin_global_shortcut::ShortcutState::Pressed {
-                let state = state_clone.clone();
-                std::thread::spawn(move || {
-                    toggle_recording(state);
-                });
-            }
+        } else if event.state == tauri_plugin_global_shortcut::ShortcutState::Pressed {
+            let state = state.clone();
+            std::thread::spawn(move || toggle_recording(state));
         }
-    }).map_err(|e| format!("Kısayol hatası: {}", e))?;
-    
-    // Config güncelle
-    state.config.lock().hotkey = new_hotkey.clone();
-    state.config.lock().save();
-    
+    })
+}
+
+#[tauri::command]
+fn change_hotkey(app: AppHandle, state: tauri::State<'_, Arc<AppState>>, new_hotkey: String) -> Result<String, String> {
+    use tauri_plugin_global_shortcut::GlobalShortcutExt;
+
+    let old_hotkey = state.config.lock().hotkey.clone();
+    if old_hotkey == new_hotkey {
+        return Ok(format!("Kısayol zaten aktif: {}", new_hotkey));
+    }
+
+    // Fn seçimine geçerken eski kısayol kaldırılamazsa ayarı değiştirme.
+    if new_hotkey == "FnDoubleTap" {
+        if old_hotkey != "FnDoubleTap" {
+            app.global_shortcut()
+                .unregister(old_hotkey.as_str())
+                .map_err(|e| format!("Eski kısayol kaldırılamadı: {e}"))?;
+        }
+        let mut config = state.config.lock();
+        config.hotkey = new_hotkey.clone();
+        config.save();
+        println!("🎹 Kısayol değiştirildi: {} → {} (Fn çift dokunma)", old_hotkey, new_hotkey);
+        return Ok(format!("Kısayol değiştirildi: {}", new_hotkey));
+    }
+
+    // Önce yeniyi kaydet. Başarısız olursa eski kısayol çalışmaya devam eder.
+    register_global_hotkey(&app, (*state).clone(), &new_hotkey)
+        .map_err(|e| format!("Yeni kısayol kaydedilemedi: {e}"))?;
+
+    // Yenisi hazır olduktan sonra eskiyi kaldır. Kaldırma başarısızsa yeniyi geri al.
+    if old_hotkey != "FnDoubleTap" {
+        if let Err(error) = app.global_shortcut().unregister(old_hotkey.as_str()) {
+            let _ = app.global_shortcut().unregister(new_hotkey.as_str());
+            return Err(format!("Eski kısayol kaldırılamadı: {error}"));
+        }
+    }
+
+    let mut config = state.config.lock();
+    config.hotkey = new_hotkey.clone();
+    config.save();
     println!("🎹 Kısayol değiştirildi: {} → {}", old_hotkey, new_hotkey);
     Ok(format!("Kısayol değiştirildi: {}", new_hotkey))
 }
@@ -653,7 +716,6 @@ pub fn run() {
     let app_state = Arc::new(AppState {
         audio_engine: Mutex::new(AudioEngine::new(sample_rate)),
         config: Mutex::new(config),
-        is_active: Mutex::new(false),
         current_mode: Mutex::new("dictation".into()),
         source_app: Mutex::new(None),
         is_recording: Mutex::new(false),
@@ -676,6 +738,10 @@ pub fn run() {
             is_recording_cmd,
             get_config,
             save_config,
+            get_secret_status,
+            set_api_secret,
+            delete_api_secret,
+            test_api_provider,
             set_mode,
             health_check,
             change_hotkey,
@@ -773,55 +839,9 @@ pub fn run() {
             let state_for_shortcut = state_for_manager.clone();
             let hotkey_str = state_for_manager.config.lock().hotkey.clone();
             println!("🎹 Kısayol: {}", hotkey_str);
-            app.global_shortcut().on_shortcut(hotkey_str.as_str(), move |_app, _shortcut, event| {
-                let hold_mode = state_for_shortcut.config.lock().hold_to_talk;
-
-                if hold_mode {
-                    // P4: Basılı tutma modu — basınca kayıt, bırakınca durdur
-                    match event.state {
-                        tauri_plugin_global_shortcut::ShortcutState::Pressed => {
-                            let is_rec = *state_for_shortcut.is_recording.lock();
-                            // Debounce: 500ms içinde tekrar tetiklenmeyi engelle
-                            let elapsed = state_for_shortcut.last_record_start.lock().elapsed();
-                            if !is_rec && elapsed.as_millis() > 500 {
-                                *state_for_shortcut.last_record_start.lock() = std::time::Instant::now();
-                                let state = state_for_shortcut.clone();
-                                std::thread::spawn(move || {
-            let t_start = std::time::Instant::now();
-                                    match state.audio_engine.lock().start_recording() {
-                                        Ok(_) => {
-                                            // Kayıt başlamadan önceki aktif uygulamayı kaydet
-                *state.source_app.lock() = get_active_app();
-                *state.is_recording.lock() = true;
-                                            println!("🎙️  Kayıt başladı (basılı tutma)");
-                                        }
-                                        Err(e) => println!("❌ Kayıt hatası: {}", e),
-                                    }
-                                });
-                            }
-                        }
-                        tauri_plugin_global_shortcut::ShortcutState::Released => {
-                            let is_rec = *state_for_shortcut.is_recording.lock();
-                            if is_rec {
-                                let state = state_for_shortcut.clone();
-                                std::thread::spawn(move || {
-            let t_start = std::time::Instant::now();
-                                    toggle_recording(state);
-                                });
-                            }
-                        }
-                    }
-                } else {
-                    // Normal toggle modu
-                    if event.state == tauri_plugin_global_shortcut::ShortcutState::Pressed {
-                        let state = state_for_shortcut.clone();
-                        std::thread::spawn(move || {
-            let t_start = std::time::Instant::now();
-                            toggle_recording(state);
-                        });
-                    }
-                }
-            })?;
+            if hotkey_str != "FnDoubleTap" {
+                register_global_hotkey(app.handle(), state_for_shortcut, &hotkey_str)?;
+            }
 
             // ── Double-Tap Fn Tuşu Dinleyicisi (NSEvent global monitor) ──
             let state_for_fn = state_for_manager.clone();
@@ -849,6 +869,10 @@ pub fn run() {
                     if state_cb.window_visible.load(std::sync::atomic::Ordering::Relaxed) {
                         return;
                     }
+                    // Fn dinleyicisi süreç boyunca açık kalır ama yalnızca seçiliyse çalışır.
+                    if state_cb.config.lock().hotkey != "FnDoubleTap" {
+                        return;
+                    }
                     
                     unsafe {
                         let flags: u64 = msg_send![event, modifierFlags];
@@ -872,7 +896,7 @@ pub fn run() {
                                                 *state_start.source_app.lock() = get_active_app();
                                                 *state_start.is_recording.lock() = true;
                                                 println!("🎙️  Fn kayıt başladı (hedef: {:?})", state_start.source_app.lock());
-                                                std::thread::spawn(|| { notify("🎙️ Kayıt", "3s susunca yazar, 30s susunca kapanır"); });
+                                                std::thread::spawn(|| { notify("🎙️ Kayıt", "Konuşma bitince yazar, 30s sessizlikte kapanır"); });
                                                 
                                                 start_watchdog(Arc::clone(&state_start));
                                             }
@@ -903,16 +927,30 @@ pub fn run() {
             }
 
             println!("🌿 Millow başlatıldı!");
-            println!("   Kısayollar: {} veya Fn tuşuna çift tıkla", hotkey_str);
+            println!("   Kısayol: {}", hotkey_str);
             println!("   Tray menüsünden de kullanabilirsiniz");
 
-            // Ana pencereyi gizle ve Dock'tan kaldır (menü çubuğu uygulaması)
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.hide().unwrap();
+            // Release menü çubuğunda başlar; geliştirme sürümü UI testleri için açık kalır.
+            if cfg!(debug_assertions) {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+                app_state
+                    .window_visible
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                #[cfg(target_os = "macos")]
+                show_dock();
+            } else {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.hide();
+                }
+                app_state
+                    .window_visible
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
+                #[cfg(target_os = "macos")]
+                hide_dock();
             }
-            app_state.window_visible.store(false, std::sync::atomic::Ordering::Relaxed);
-            #[cfg(target_os = "macos")]
-            hide_dock();
 
             // Pencere kapatma olayını yakala — gizle, çıkma
             let app_handle = app.handle().clone();
@@ -945,4 +983,60 @@ pub fn run() {
             api.prevent_exit();
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        adaptive_flush_silence, configured_transcribe_mode, is_unknown_command, MillowConfig,
+        TranscribeMode, TranscribeResult,
+    };
+
+    #[test]
+    fn adaptive_silence_is_fast_for_short_utterances() {
+        assert_eq!(adaptive_flush_silence(1.0, 1.5), 0.7);
+    }
+
+    #[test]
+    fn adaptive_silence_grows_for_longer_utterances() {
+        assert_eq!(adaptive_flush_silence(3.0, 1.5), 0.85);
+        assert_eq!(adaptive_flush_silence(8.0, 1.5), 1.0);
+    }
+
+    #[test]
+    fn adaptive_silence_respects_configured_lower_bound() {
+        assert_eq!(adaptive_flush_silence(1.0, 0.5), 0.5);
+        assert_eq!(adaptive_flush_silence(8.0, 0.6), 0.6);
+    }
+
+    #[test]
+    fn ui_mode_selection_reaches_the_transcriber() {
+        let config = MillowConfig {
+            translation_target: "de".into(),
+            ..MillowConfig::default()
+        };
+
+        assert!(matches!(
+            configured_transcribe_mode("dictation", &config),
+            TranscribeMode::Dictation
+        ));
+        assert!(matches!(
+            configured_transcribe_mode("command", &config),
+            TranscribeMode::Command
+        ));
+        assert!(matches!(
+            configured_transcribe_mode("translate", &config),
+            TranscribeMode::Translate { target_lang } if target_lang == "de"
+        ));
+    }
+
+    #[test]
+    fn unknown_commands_are_not_executed_as_errors() {
+        assert!(is_unknown_command(&TranscribeResult {
+            result_type: "command".into(),
+            text: "bugün hava güzel".into(),
+            action: Some("unknown".into()),
+            params: None,
+        }));
+    }
 }

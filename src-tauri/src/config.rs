@@ -7,11 +7,8 @@ use std::path::PathBuf;
 
 /// Uygulama ayarları
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct MillowConfig {
-    /// Gemini API anahtarı (Antigravity proxy)
-    pub api_key: String,
-    /// Proxy adresi
-    pub proxy_endpoint: String,
     /// Gemini model adı
     pub model: String,
     /// Varsayılan dil ("tr" veya "en")
@@ -38,6 +35,10 @@ pub struct MillowConfig {
     #[serde(default = "default_true")]
     pub ai_editing: bool,
 
+    /// Dikte düzenleme seviyesi: "fast", "clean", "rewrite"
+    #[serde(default = "default_editing_mode")]
+    pub editing_mode: String,
+
     // ── P2: Sesli Format Komutları ──
     /// "yeni satır", "nokta" gibi sesli komutları biçime çevir
     #[serde(default = "default_true")]
@@ -62,11 +63,6 @@ pub struct MillowConfig {
     /// Düşük sesli/fısıltı konuşma için optimize et
     #[serde(default)]
     pub whisper_mode: bool,
-
-    // ── Groq Whisper (hızlı transcription) ──
-    /// Groq API anahtarı (ücretsiz — console.groq.com)
-    #[serde(default)]
-    pub groq_api_key: Option<String>,
 
     // ── Başlangıçta Çalış ──
     /// Mac açılınca otomatik başlat
@@ -114,15 +110,24 @@ fn default_auto_stop_duration() -> f32 {
 
 fn default_hallucinations() -> Vec<String> {
     vec![
-        "Altyazı M.K.".into(), "altyazı m.k.".into(), "Altyazı M.K".into(),
-        "Alt yazı M.K.".into(), "Altyazılar M.K.".into(),
-        "Altyazı".into(), "Alt yazı".into(),
-        "Subtitles by".into(), "Sottotitoli".into(),
-        "Thank you.".into(), "Thanks for watching.".into(),
+        "Altyazı M.K.".into(),
+        "altyazı m.k.".into(),
+        "Altyazı M.K".into(),
+        "Alt yazı M.K.".into(),
+        "Altyazılar M.K.".into(),
+        "Altyazı".into(),
+        "Alt yazı".into(),
+        "Subtitles by".into(),
+        "Sottotitoli".into(),
+        "Thank you.".into(),
+        "Thanks for watching.".into(),
         "Thank you for watching.".into(),
-        "you".into(), "You".into(),
-        "...".into(), "…".into(),
-        "Teşekkürler.".into(), "Teşekkür ederim.".into(),
+        "you".into(),
+        "You".into(),
+        "...".into(),
+        "…".into(),
+        "Teşekkürler.".into(),
+        "Teşekkür ederim.".into(),
         "İyi seyirler.".into(),
         "İzlediğiniz için teşekkür ederim.".into(),
         "İzlediğiniz için teşekkürler.".into(),
@@ -137,12 +142,30 @@ fn default_style() -> String {
     "auto".into()
 }
 
+fn default_editing_mode() -> String {
+    "clean".into()
+}
+
+fn normalize_model(model: &str) -> (&'static str, bool) {
+    match model {
+        "gemini-3.5-flash" => ("gemini-3.5-flash", false),
+        _ => ("gemini-3.5-flash", true),
+    }
+}
+
+fn normalize_editing_mode(mode: &str) -> (&'static str, bool) {
+    match mode {
+        "fast" => ("fast", false),
+        "clean" => ("clean", false),
+        "rewrite" => ("rewrite", false),
+        _ => ("clean", true),
+    }
+}
+
 impl Default for MillowConfig {
     fn default() -> Self {
         Self {
-            api_key: "sk-e5746968759d4c4cae5a09c32dfc6a6d".into(),
-            proxy_endpoint: "http://127.0.0.1:8045".into(),
-            model: "gemini-3-flash".into(),
+            model: "gemini-3.5-flash".into(),
             default_language: "tr".into(),
             translation_enabled: false,
             translation_target: "en".into(),
@@ -150,15 +173,15 @@ impl Default for MillowConfig {
             wakeword_enabled: true,
             wakeword: "millow".into(),
             wakeword_stop: "millow bye bye".into(),
-            hotkey: "Option+Space".into(),
+            hotkey: "Alt+Space".into(),
             sample_rate: 16000,
             ai_editing: true,
+            editing_mode: default_editing_mode(),
             format_commands: true,
             custom_dictionary: Vec::new(),
             hold_to_talk: true,
             writing_style: "auto".into(),
             whisper_mode: false,
-            groq_api_key: None,
             auto_launch: false,
             noise_tolerance: 0.15,
             silence_duration: 1.5,
@@ -181,7 +204,82 @@ impl MillowConfig {
         let path = Self::config_path();
         if path.exists() {
             let data = fs::read_to_string(&path).unwrap_or_default();
-            serde_json::from_str(&data).unwrap_or_default()
+            let raw: serde_json::Value = serde_json::from_str(&data).unwrap_or_default();
+            let mut config: Self = serde_json::from_value(raw.clone()).unwrap_or_default();
+            let (supported_model, model_migrated) = normalize_model(&config.model);
+            if model_migrated {
+                config.model = supported_model.into();
+            }
+            let legacy_hotkey = config.hotkey == "Option+Space";
+            if legacy_hotkey {
+                config.hotkey = "Alt+Space".into();
+            }
+            let missing_editing_mode = raw.get("editing_mode").is_none();
+            if missing_editing_mode && !config.ai_editing {
+                config.editing_mode = "fast".into();
+            }
+            let (supported_editing_mode, editing_mode_migrated) =
+                normalize_editing_mode(&config.editing_mode);
+            if editing_mode_migrated {
+                config.editing_mode = supported_editing_mode.into();
+            }
+
+            // Eski sürümlerde JSON'da tutulan gerçek anahtarları bir kez Keychain'e taşı.
+            // Keychain yazımı başarısızsa veri kaybını önlemek için eski dosyayı koru.
+            let legacy_fields_present = ["api_key", "proxy_endpoint", "groq_api_key"]
+                .iter()
+                .any(|key| raw.get(key).is_some());
+            let mut safe_to_scrub = true;
+
+            if let Some(groq_key) = raw.get("groq_api_key").and_then(|value| value.as_str()) {
+                if groq_key.starts_with("gsk_")
+                    && crate::secrets::get_secret(crate::secrets::SecretKind::Groq)
+                        .ok()
+                        .flatten()
+                        .is_none()
+                {
+                    if let Err(error) =
+                        crate::secrets::set_secret(crate::secrets::SecretKind::Groq, groq_key)
+                    {
+                        eprintln!("Keychain Groq geçişi başarısız: {error}");
+                        safe_to_scrub = false;
+                    } else {
+                        println!("Groq anahtarı macOS Keychain'e taşındı");
+                    }
+                }
+            }
+
+            if let Some(gemini_key) = raw.get("api_key").and_then(|value| value.as_str()) {
+                if crate::secrets::SecretKind::Gemini
+                    .validate(gemini_key)
+                    .is_ok()
+                    && crate::secrets::get_secret(crate::secrets::SecretKind::Gemini)
+                        .ok()
+                        .flatten()
+                        .is_none()
+                {
+                    if let Err(error) =
+                        crate::secrets::set_secret(crate::secrets::SecretKind::Gemini, gemini_key)
+                    {
+                        eprintln!("Keychain Gemini geçişi başarısız: {error}");
+                        safe_to_scrub = false;
+                    } else {
+                        println!("Gemini anahtarı macOS Keychain'e taşındı");
+                    }
+                }
+            }
+
+            if (legacy_fields_present
+                || model_migrated
+                || legacy_hotkey
+                || missing_editing_mode
+                || editing_mode_migrated)
+                && safe_to_scrub
+            {
+                config.save();
+            }
+
+            config
         } else {
             let config = Self::default();
             config.save();
@@ -198,5 +296,36 @@ impl MillowConfig {
         if let Ok(data) = serde_json::to_string_pretty(self) {
             let _ = fs::write(&path, data);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn serialized_config_never_contains_api_secrets() {
+        let value = serde_json::to_value(MillowConfig::default()).unwrap();
+        assert!(value.get("api_key").is_none());
+        assert!(value.get("groq_api_key").is_none());
+        assert!(value.get("proxy_endpoint").is_none());
+    }
+
+    #[test]
+    fn defaults_use_current_model_and_hotkey_syntax() {
+        let config = MillowConfig::default();
+        assert_eq!(config.model, "gemini-3.5-flash");
+        assert_eq!(config.hotkey, "Alt+Space");
+        assert_eq!(config.editing_mode, "clean");
+    }
+
+    #[test]
+    fn unsupported_config_values_are_normalized() {
+        assert_eq!(
+            normalize_model("gemini-3.5-flash-low"),
+            ("gemini-3.5-flash", true)
+        );
+        assert_eq!(normalize_editing_mode("invalid"), ("clean", true));
+        assert_eq!(normalize_editing_mode("rewrite"), ("rewrite", false));
     }
 }

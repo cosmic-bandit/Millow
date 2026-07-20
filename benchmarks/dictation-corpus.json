@@ -1,0 +1,287 @@
+{
+  "version": 1,
+  "language": "tr-TR",
+  "description": "Millow Hızlı, Temiz ve Yeniden Yaz modları için 40 cümlelik kişisel dikte değerlendirme seti.",
+  "cases": [
+    {
+      "id": "daily-01",
+      "category": "daily",
+      "read_aloud": "Bugün markete uğrayıp süt, kahve ve ekmek alacağım.",
+      "expected": { "fast": "Bugün markete uğrayıp süt, kahve ve ekmek alacağım.", "clean": "Bugün markete uğrayıp süt, kahve ve ekmek alacağım.", "rewrite": "Bugün markete uğrayarak süt, kahve ve ekmek alacağım." },
+      "protected_terms": []
+    },
+    {
+      "id": "daily-02",
+      "category": "daily",
+      "read_aloud": "Toplantıdan sonra seni arayıp detayları paylaşırım.",
+      "expected": { "fast": "Toplantıdan sonra seni arayıp detayları paylaşırım.", "clean": "Toplantıdan sonra seni arayıp detayları paylaşırım.", "rewrite": "Toplantının ardından seni arayıp ayrıntıları paylaşırım." },
+      "protected_terms": []
+    },
+    {
+      "id": "daily-03",
+      "category": "daily",
+      "read_aloud": "Dosyaları masaüstündeki Millow klasörüne taşıdım.",
+      "expected": { "fast": "Dosyaları masaüstündeki Millow klasörüne taşıdım.", "clean": "Dosyaları masaüstündeki Millow klasörüne taşıdım.", "rewrite": "Dosyaları masaüstünde bulunan Millow klasörüne taşıdım." },
+      "protected_terms": ["Millow"]
+    },
+    {
+      "id": "daily-04",
+      "category": "daily",
+      "read_aloud": "Akşam yedide evde olacağım, yemeğe beni bekleyin.",
+      "expected": { "fast": "Akşam yedide evde olacağım, yemeğe beni bekleyin.", "clean": "Akşam yedide evde olacağım, yemeğe beni bekleyin.", "rewrite": "Akşam saat yedide evde olacağım; yemeğe beni bekleyin." },
+      "protected_terms": ["yedide"]
+    },
+    {
+      "id": "daily-05",
+      "category": "daily",
+      "read_aloud": "Kargoyu teslim alınca bana kısa bir mesaj gönder.",
+      "expected": { "fast": "Kargoyu teslim alınca bana kısa bir mesaj gönder.", "clean": "Kargoyu teslim alınca bana kısa bir mesaj gönder.", "rewrite": "Kargoyu teslim aldıktan sonra bana kısa bir mesaj gönder." },
+      "protected_terms": []
+    },
+    {
+      "id": "daily-06",
+      "category": "daily",
+      "read_aloud": "Bu belgeyi gözden geçirip yorumlarını yarına kadar ekler misin?",
+      "expected": { "fast": "Bu belgeyi gözden geçirip yorumlarını yarına kadar ekler misin?", "clean": "Bu belgeyi gözden geçirip yorumlarını yarına kadar ekler misin?", "rewrite": "Bu belgeyi inceleyip yorumlarını yarına kadar ekleyebilir misin?" },
+      "protected_terms": []
+    },
+    {
+      "id": "daily-07",
+      "category": "daily",
+      "read_aloud": "Yağmur başlamadan köpeği yürüyüşe çıkarmam gerekiyor.",
+      "expected": { "fast": "Yağmur başlamadan köpeği yürüyüşe çıkarmam gerekiyor.", "clean": "Yağmur başlamadan köpeği yürüyüşe çıkarmam gerekiyor.", "rewrite": "Yağmur başlamadan önce köpeği yürüyüşe çıkarmalıyım." },
+      "protected_terms": []
+    },
+    {
+      "id": "daily-08",
+      "category": "daily",
+      "read_aloud": "Faturayı ödedim ama dekont henüz e-postama gelmedi.",
+      "expected": { "fast": "Faturayı ödedim ama dekont henüz e-postama gelmedi.", "clean": "Faturayı ödedim ama dekont henüz e-postama gelmedi.", "rewrite": "Faturayı ödememe rağmen dekont henüz e-postama ulaşmadı." },
+      "protected_terms": []
+    },
+    {
+      "id": "filler-01",
+      "category": "fillers",
+      "read_aloud": "Iıı yarın şey saat onda toplantıya katılacağım.",
+      "expected": { "fast": "Iıı yarın şey saat onda toplantıya katılacağım.", "clean": "Yarın saat onda toplantıya katılacağım.", "rewrite": "Yarın saat onda yapılacak toplantıya katılacağım." },
+      "protected_terms": ["onda"]
+    },
+    {
+      "id": "filler-02",
+      "category": "fillers",
+      "read_aloud": "Yani bu tasarım bence hani biraz daha sade olabilir.",
+      "expected": { "fast": "Yani bu tasarım bence hani biraz daha sade olabilir.", "clean": "Bu tasarım bence biraz daha sade olabilir.", "rewrite": "Bence bu tasarım daha sade olabilir." },
+      "protected_terms": []
+    },
+    {
+      "id": "filler-03",
+      "category": "fillers",
+      "read_aloud": "Ee raporu bugün bitirip yani akşam göndereceğim.",
+      "expected": { "fast": "Ee raporu bugün bitirip yani akşam göndereceğim.", "clean": "Raporu bugün bitirip akşam göndereceğim.", "rewrite": "Raporu bugün tamamlayarak akşam göndereceğim." },
+      "protected_terms": []
+    },
+    {
+      "id": "filler-04",
+      "category": "fillers",
+      "read_aloud": "Şimdi şey uygulama açılıyor ama biraz yavaş açılıyor.",
+      "expected": { "fast": "Şimdi şey uygulama açılıyor ama biraz yavaş açılıyor.", "clean": "Uygulama açılıyor ama biraz yavaş açılıyor.", "rewrite": "Uygulama açılıyor ancak açılışı biraz yavaş." },
+      "protected_terms": []
+    },
+    {
+      "id": "filler-05",
+      "category": "fillers",
+      "read_aloud": "Hımm bunu bir düşüneyim sonra sana dönüş yaparım.",
+      "expected": { "fast": "Hımm bunu bir düşüneyim sonra sana dönüş yaparım.", "clean": "Bunu bir düşüneyim, sonra sana dönüş yaparım.", "rewrite": "Bunu düşündükten sonra sana dönüş yaparım." },
+      "protected_terms": []
+    },
+    {
+      "id": "filler-06",
+      "category": "fillers",
+      "read_aloud": "Aslında yani sonuçlar beklediğimizden daha iyi çıktı.",
+      "expected": { "fast": "Aslında yani sonuçlar beklediğimizden daha iyi çıktı.", "clean": "Sonuçlar beklediğimizden daha iyi çıktı.", "rewrite": "Sonuçlar beklentilerimizin üzerinde çıktı." },
+      "protected_terms": []
+    },
+    {
+      "id": "filler-07",
+      "category": "fillers",
+      "read_aloud": "Bu konuya falan yarın tekrar bakabiliriz.",
+      "expected": { "fast": "Bu konuya falan yarın tekrar bakabiliriz.", "clean": "Bu konuya yarın tekrar bakabiliriz.", "rewrite": "Bu konuyu yarın yeniden değerlendirebiliriz." },
+      "protected_terms": []
+    },
+    {
+      "id": "filler-08",
+      "category": "fillers",
+      "read_aloud": "Ben ben bu değişikliğin gerekli olduğunu düşünüyorum.",
+      "expected": { "fast": "Ben ben bu değişikliğin gerekli olduğunu düşünüyorum.", "clean": "Ben bu değişikliğin gerekli olduğunu düşünüyorum.", "rewrite": "Bu değişikliğin gerekli olduğunu düşünüyorum." },
+      "protected_terms": []
+    },
+    {
+      "id": "repair-01",
+      "category": "self_correction",
+      "read_aloud": "Toplantı salı, pardon çarşamba günü yapılacak.",
+      "expected": { "fast": "Toplantı salı, pardon çarşamba günü yapılacak.", "clean": "Toplantı çarşamba günü yapılacak.", "rewrite": "Toplantı çarşamba günü gerçekleştirilecek." },
+      "protected_terms": ["çarşamba"]
+    },
+    {
+      "id": "repair-02",
+      "category": "self_correction",
+      "read_aloud": "Dosyayı Mehmet'e, hayır Mert'e gönderdim.",
+      "expected": { "fast": "Dosyayı Mehmet'e, hayır Mert'e gönderdim.", "clean": "Dosyayı Mert'e gönderdim.", "rewrite": "Dosyayı Mert'e ilettim." },
+      "protected_terms": ["Mert"]
+    },
+    {
+      "id": "repair-03",
+      "category": "self_correction",
+      "read_aloud": "Bütçe iki yüz, düzeltiyorum iki yüz elli bin lira.",
+      "expected": { "fast": "Bütçe iki yüz, düzeltiyorum iki yüz elli bin lira.", "clean": "Bütçe iki yüz elli bin lira.", "rewrite": "Bütçe 250 bin lira olarak belirlendi." },
+      "protected_terms": ["iki yüz elli bin"]
+    },
+    {
+      "id": "repair-04",
+      "category": "self_correction",
+      "read_aloud": "Sunumu ben hazırlayacağım, daha doğrusu Ayşe hazırlayacak.",
+      "expected": { "fast": "Sunumu ben hazırlayacağım, daha doğrusu Ayşe hazırlayacak.", "clean": "Sunumu Ayşe hazırlayacak.", "rewrite": "Sunumu Ayşe hazırlayacak." },
+      "protected_terms": ["Ayşe"]
+    },
+    {
+      "id": "repair-05",
+      "category": "self_correction",
+      "read_aloud": "Saat üçte değil üç buçukta görüşelim.",
+      "expected": { "fast": "Saat üçte değil üç buçukta görüşelim.", "clean": "Saat üç buçukta görüşelim.", "rewrite": "Saat üç buçukta buluşalım." },
+      "protected_terms": ["üç buçukta"]
+    },
+    {
+      "id": "repair-06",
+      "category": "self_correction",
+      "read_aloud": "İlk sürümü cuma, yok pazartesi yayınlayacağız.",
+      "expected": { "fast": "İlk sürümü cuma, yok pazartesi yayınlayacağız.", "clean": "İlk sürümü pazartesi yayınlayacağız.", "rewrite": "İlk sürüm pazartesi günü yayınlanacak." },
+      "protected_terms": ["pazartesi"]
+    },
+    {
+      "id": "terms-01",
+      "category": "proper_terms",
+      "read_aloud": "Millow uygulaması Tauri, Rust ve React ile geliştiriliyor.",
+      "expected": { "fast": "Millow uygulaması Tauri, Rust ve React ile geliştiriliyor.", "clean": "Millow uygulaması Tauri, Rust ve React ile geliştiriliyor.", "rewrite": "Millow; Tauri, Rust ve React kullanılarak geliştiriliyor." },
+      "protected_terms": ["Millow", "Tauri", "Rust", "React"]
+    },
+    {
+      "id": "terms-02",
+      "category": "proper_terms",
+      "read_aloud": "Groq Whisper çıktısını Gemini Flash ile temizliyoruz.",
+      "expected": { "fast": "Groq Whisper çıktısını Gemini Flash ile temizliyoruz.", "clean": "Groq Whisper çıktısını Gemini Flash ile temizliyoruz.", "rewrite": "Groq Whisper çıktısını Gemini Flash kullanarak düzenliyoruz." },
+      "protected_terms": ["Groq Whisper", "Gemini Flash"]
+    },
+    {
+      "id": "terms-03",
+      "category": "proper_terms",
+      "read_aloud": "WebRTC VAD sessizlik algılamasını daha güvenilir hale getiriyor.",
+      "expected": { "fast": "WebRTC VAD sessizlik algılamasını daha güvenilir hale getiriyor.", "clean": "WebRTC VAD sessizlik algılamasını daha güvenilir hale getiriyor.", "rewrite": "WebRTC VAD, sessizliğin daha güvenilir biçimde algılanmasını sağlıyor." },
+      "protected_terms": ["WebRTC VAD"]
+    },
+    {
+      "id": "terms-04",
+      "category": "proper_terms",
+      "read_aloud": "Keychain kaydı com nokta millow nokta app hizmetini kullanıyor.",
+      "expected": { "fast": "Keychain kaydı com.millow.app hizmetini kullanıyor.", "clean": "Keychain kaydı com.millow.app hizmetini kullanıyor.", "rewrite": "Keychain kaydı, com.millow.app hizmetini kullanıyor." },
+      "protected_terms": ["Keychain", "com.millow.app"]
+    },
+    {
+      "id": "terms-05",
+      "category": "proper_terms",
+      "read_aloud": "Cliniolabs ve Nietzsche sözcüklerini özel sözlüğe ekledim.",
+      "expected": { "fast": "Cliniolabs ve Nietzsche sözcüklerini özel sözlüğe ekledim.", "clean": "Cliniolabs ve Nietzsche sözcüklerini özel sözlüğe ekledim.", "rewrite": "Cliniolabs ve Nietzsche sözcüklerini özel sözlüğe kaydettim." },
+      "protected_terms": ["Cliniolabs", "Nietzsche"]
+    },
+    {
+      "id": "terms-06",
+      "category": "proper_terms",
+      "read_aloud": "TypeScript derlemesi Vite üzerinden çalışıyor.",
+      "expected": { "fast": "TypeScript derlemesi Vite üzerinden çalışıyor.", "clean": "TypeScript derlemesi Vite üzerinden çalışıyor.", "rewrite": "TypeScript derlemesi Vite aracılığıyla çalışıyor." },
+      "protected_terms": ["TypeScript", "Vite"]
+    },
+    {
+      "id": "terms-07",
+      "category": "proper_terms",
+      "read_aloud": "macOS Sonoma üzerinde Apple Silicon için test yaptım.",
+      "expected": { "fast": "macOS Sonoma üzerinde Apple Silicon için test yaptım.", "clean": "macOS Sonoma üzerinde Apple Silicon için test yaptım.", "rewrite": "Apple Silicon sürümünü macOS Sonoma üzerinde test ettim." },
+      "protected_terms": ["macOS Sonoma", "Apple Silicon"]
+    },
+    {
+      "id": "terms-08",
+      "category": "proper_terms",
+      "read_aloud": "GitHub'daki cosmic tire bandit eğik çizgi Millow deposunu güncelledim.",
+      "expected": { "fast": "GitHub'daki cosmic-bandit/Millow deposunu güncelledim.", "clean": "GitHub'daki cosmic-bandit/Millow deposunu güncelledim.", "rewrite": "GitHub üzerinde bulunan cosmic-bandit/Millow deposunu güncelledim." },
+      "protected_terms": ["GitHub", "cosmic-bandit/Millow"]
+    },
+    {
+      "id": "data-01",
+      "category": "numbers_and_code",
+      "read_aloud": "Randevum 24 Temmuz 2026 Cuma günü saat 14.30'da.",
+      "expected": { "fast": "Randevum 24 Temmuz 2026 Cuma günü saat 14.30'da.", "clean": "Randevum 24 Temmuz 2026 Cuma günü saat 14.30'da.", "rewrite": "Randevum 24 Temmuz 2026 Cuma günü saat 14.30'da." },
+      "protected_terms": ["24 Temmuz 2026", "14.30"]
+    },
+    {
+      "id": "data-02",
+      "category": "numbers_and_code",
+      "read_aloud": "Sipariş numarası M L W tire 4827.",
+      "expected": { "fast": "Sipariş numarası MLW-4827.", "clean": "Sipariş numarası MLW-4827.", "rewrite": "Sipariş numarası MLW-4827." },
+      "protected_terms": ["MLW-4827"]
+    },
+    {
+      "id": "data-03",
+      "category": "numbers_and_code",
+      "read_aloud": "E-posta adresim mehmet nokta ustun et example nokta com.",
+      "expected": { "fast": "E-posta adresim mehmet.ustun@example.com.", "clean": "E-posta adresim mehmet.ustun@example.com.", "rewrite": "E-posta adresim mehmet.ustun@example.com." },
+      "protected_terms": ["mehmet.ustun@example.com"]
+    },
+    {
+      "id": "data-04",
+      "category": "numbers_and_code",
+      "read_aloud": "Adres https iki nokta eğik çizgi eğik çizgi millow nokta app eğik çizgi docs.",
+      "expected": { "fast": "Adres https://millow.app/docs.", "clean": "Adres https://millow.app/docs.", "rewrite": "Adres: https://millow.app/docs." },
+      "protected_terms": ["https://millow.app/docs"]
+    },
+    {
+      "id": "data-05",
+      "category": "numbers_and_code",
+      "read_aloud": "Fonksiyon adı apply alt çizgi spoken alt çizgi format alt çizgi commands.",
+      "expected": { "fast": "Fonksiyon adı apply_spoken_format_commands.", "clean": "Fonksiyon adı apply_spoken_format_commands.", "rewrite": "Fonksiyonun adı apply_spoken_format_commands." },
+      "protected_terms": ["apply_spoken_format_commands"]
+    },
+    {
+      "id": "data-06",
+      "category": "numbers_and_code",
+      "read_aloud": "Gecikme 812 milisaniye, başarı oranı yüzde 97,5 ölçüldü.",
+      "expected": { "fast": "Gecikme 812 milisaniye, başarı oranı yüzde 97,5 ölçüldü.", "clean": "Gecikme 812 milisaniye, başarı oranı yüzde 97,5 ölçüldü.", "rewrite": "Gecikme 812 milisaniye ve başarı oranı yüzde 97,5 olarak ölçüldü." },
+      "protected_terms": ["812", "97,5"]
+    },
+    {
+      "id": "format-01",
+      "category": "formatting",
+      "read_aloud": "Merhaba nokta işareti yeni satır Bugün nasılsın soru işareti",
+      "expected": { "fast": "Merhaba.\nBugün nasılsın?", "clean": "Merhaba.\nBugün nasılsın?", "rewrite": "Merhaba.\nBugün nasılsın?" },
+      "protected_terms": []
+    },
+    {
+      "id": "format-02",
+      "category": "formatting",
+      "read_aloud": "Alınacaklar iki nokta üst üste yeni satır süt virgül işareti kahve virgül işareti ekmek nokta işareti",
+      "expected": { "fast": "Alınacaklar:\nsüt, kahve, ekmek.", "clean": "Alınacaklar:\nsüt, kahve, ekmek.", "rewrite": "Alınacaklar:\nsüt, kahve, ekmek." },
+      "protected_terms": []
+    },
+    {
+      "id": "format-03",
+      "category": "formatting",
+      "read_aloud": "Birinci bölüm bitti nokta işareti yeni paragraf İkinci bölüme başlıyoruz nokta işareti",
+      "expected": { "fast": "Birinci bölüm bitti.\n\nİkinci bölüme başlıyoruz.", "clean": "Birinci bölüm bitti.\n\nİkinci bölüme başlıyoruz.", "rewrite": "Birinci bölüm bitti.\n\nİkinci bölüme başlıyoruz." },
+      "protected_terms": []
+    },
+    {
+      "id": "format-04",
+      "category": "formatting",
+      "read_aloud": "Bu sürüm hızlı virgül işareti kararlı ve güvenli ünlem işareti",
+      "expected": { "fast": "Bu sürüm hızlı, kararlı ve güvenli!", "clean": "Bu sürüm hızlı, kararlı ve güvenli!", "rewrite": "Bu sürüm hızlı, kararlı ve güvenli!" },
+      "protected_terms": []
+    }
+  ]
+}

@@ -12,6 +12,7 @@
 .setting-row { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px; border-bottom: 0.5px solid var(--separator); gap: 12px; }
 .setting-row:last-child { border-bottom: none; }
 .setting-row > span { font-size: 13px; color: var(--text-primary); white-space: nowrap; flex-shrink: 0; min-width: 130px; }
+.setting-help { padding: 0 16px 10px; border-bottom: 0.5px solid var(--separator); color: var(--text-tertiary); font-size: 11px; line-height: 1.4; }
 .setting-row input[type='text'], .setting-row input[type='password'] { flex: 1; text-align: right; background: var(--bg-secondary); border: 0.5px solid var(--separator); border-radius: var(--radius-sm); padding: 5px 10px; font-family: var(--font-mono); font-size: 12px; color: var(--text-primary); outline: none; min-width: 0; }
 .setting-row input:focus { border-color: rgba(255,255,255,0.25); }
 .setting-row select { background: var(--bg-secondary); border: 0.5px solid var(--separator); border-radius: var(--radius-sm); padding: 5px 10px; padding-right: 24px; font-family: var(--font); font-size: 12px; color: var(--text-primary); outline: none; cursor: pointer; -webkit-appearance: none; appearance: none; background-repeat: no-repeat; background-position: right 8px center; }
@@ -29,9 +30,27 @@
 .setting-row.dictionary textarea { width: 100%; background: var(--bg-secondary); border: 0.5px solid var(--separator); border-radius: var(--radius-sm); padding: 8px 10px; font-family: var(--font); font-size: 12px; color: var(--text-primary); outline: none; resize: vertical; min-height: 80px; line-height: 1.6; }
 .setting-row.dictionary textarea::placeholder { color: var(--text-tertiary); }
 .setting-row.dictionary textarea:focus { border-color: rgba(255,255,255,0.25); }
+.dictionary-help { color: var(--text-tertiary); font-size: 11px; line-height: 1.4; }
 .app-icon { width: 20px; height: 20px; border-radius: 4px; }
 .sf-icon { flex-shrink: 0; display: inline-block; vertical-align: middle; }
 @media (max-height: 500px) { .status-orb-wrap, .status-orb { width: 60px; height: 60px; } .content { gap: 14px; padding: 16px; } }
 .setting-row select { background-image: url("data:image/svg+xml,%3Csvg width='10' height='6' viewBox='0 0 10 6' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23666' stroke-width='1.5' fill='none'/%3E%3C/svg%3E"); }
 .toolbar-btn.settings-btn { gap: 7px; color: var(--text-primary); font-size: 13px; font-weight: 600; padding: 5px 14px; background: var(--bg-secondary); border-radius: var(--radius-sm); }
 .toolbar-btn.settings-btn:hover { background: var(--bg-tertiary); }
+.setting-row.api-credential { flex-direction: column; align-items: stretch; gap: 8px; padding-top: 12px; padding-bottom: 12px; }
+.api-credential-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.api-credential-heading label { font-size: 13px; color: var(--text-primary); }
+.api-status { font-size: 10px; font-weight: 600; padding: 2px 7px; border-radius: 999px; }
+.api-status.saved { color: #72d991; background: rgba(48, 209, 88, 0.12); }
+.api-status.missing { color: var(--text-tertiary); background: var(--bg-secondary); }
+.api-credential-controls { display: flex; align-items: center; gap: 6px; }
+.api-credential-controls input[type='password'] { text-align: left; min-width: 100px; }
+.inline-btn { border: 0.5px solid var(--separator); border-radius: var(--radius-sm); background: var(--bg-secondary); color: var(--text-secondary); padding: 5px 9px; font-family: var(--font); font-size: 11px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+.inline-btn:hover:not(:disabled) { color: var(--text-primary); background: var(--bg-tertiary); }
+.inline-btn.primary { color: #fff; background: #0a84ff; border-color: transparent; }
+.inline-btn.danger { color: #ff6961; }
+.inline-btn:disabled { opacity: 0.35; cursor: default; }
+.api-model-row select { min-width: 160px; }
+.api-model-row > label { font-size: 13px; color: var(--text-primary); white-space: nowrap; flex-shrink: 0; min-width: 130px; }
+.toolbar-btn:disabled { opacity: 0.45; cursor: default; }
+.notif { width: max-content; max-width: calc(100vw - 32px); white-space: normal; text-align: center; overflow-wrap: anywhere; }

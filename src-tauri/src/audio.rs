@@ -5,6 +5,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::Stream;
 use parking_lot::Mutex;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use rubato::Resampler;
 
 /// Ses kayıt motoru durumu
@@ -32,6 +33,10 @@ pub struct AudioEngine {
     active_stream: Mutex<Option<StreamHolder>>,
     /// Son ses aktivitesi zamanı (sessizlik algılama için)
     last_voice_activity: Arc<Mutex<std::time::Instant>>,
+    /// WebRTC VAD (ve desteklenmeyen hızlardaki fallback) tarafından algılanan
+    /// toplam ses aktivitesi. Watchdog gerçek konuşmayı kayıt başlangıcındaki
+    /// yapay zaman damgasından ayırmak için bu monoton sayacı kullanır.
+    voice_activity_count: Arc<AtomicU64>,
     /// Ortam gürültüsü toleransı
     noise_tolerance: Arc<Mutex<f32>>,
 }
@@ -44,6 +49,7 @@ impl AudioEngine {
             actual_sample_rate: Arc::new(Mutex::new(16000)),
             active_stream: Mutex::new(None),
             last_voice_activity: Arc::new(Mutex::new(std::time::Instant::now())),
+            voice_activity_count: Arc::new(AtomicU64::new(0)),
             noise_tolerance: Arc::new(Mutex::new(0.15)),
         }
     }
@@ -68,6 +74,7 @@ impl AudioEngine {
         self.samples.lock().clear();
         *self.noise_tolerance.lock() = crate::config::MillowConfig::load().noise_tolerance;
         *self.last_voice_activity.lock() = std::time::Instant::now();
+        self.voice_activity_count.store(0, Ordering::Relaxed);
         *state = RecordingState::Recording;
         drop(state); // Lock'u serbest bırak
 
@@ -101,6 +108,7 @@ impl AudioEngine {
         let state_clone = self.state.clone();
         let channels = device_channels as usize;
         let voice_ts = self.last_voice_activity.clone();
+        let voice_count = self.voice_activity_count.clone();
         let noise_tol = *self.noise_tolerance.lock();
         let silence_threshold: i16 = (noise_tol * 32767.0) as i16; // ~1.5% of max
 
@@ -149,13 +157,15 @@ impl AudioEngine {
                                     match v.0.is_voice_segment(&frame) {
                                         Ok(true) => {
                                             *voice_ts.lock() = std::time::Instant::now();
+                                            voice_count.fetch_add(1, Ordering::Relaxed);
                                         }
                                         _ => {}
                                     }
                                 }
                             } else {
-                                if data.iter().any(|&s| s.abs() > silence_threshold) {
+                                if mono.iter().any(|&s| s.abs() > silence_threshold) {
                                     *voice_ts.lock() = std::time::Instant::now();
+                                    voice_count.fetch_add(1, Ordering::Relaxed);
                                 }
                             }
                             samples.lock().extend_from_slice(&mono);
@@ -169,6 +179,7 @@ impl AudioEngine {
                 let samples2 = self.samples.clone();
                 let state_clone2 = self.state.clone();
                 let voice_ts2 = self.last_voice_activity.clone();
+                let voice_count2 = self.voice_activity_count.clone();
                 let silence_threshold_f: f32 = *self.noise_tolerance.lock();
 
                 let mut vad: Option<SendVad> = match device_sample_rate {
@@ -216,6 +227,7 @@ impl AudioEngine {
                                     match v.0.is_voice_segment(&frame) {
                                         Ok(true) => {
                                             *voice_ts2.lock() = std::time::Instant::now();
+                                            voice_count2.fetch_add(1, Ordering::Relaxed);
                                         }
                                         _ => {}
                                     }
@@ -223,6 +235,7 @@ impl AudioEngine {
                             } else {
                                 if data.iter().any(|&s| s.abs() > silence_threshold_f) {
                                     *voice_ts2.lock() = std::time::Instant::now();
+                                    voice_count2.fetch_add(1, Ordering::Relaxed);
                                 }
                             }
                             samples2.lock().extend_from_slice(&mono);
@@ -283,6 +296,11 @@ impl AudioEngine {
     /// Son ses aktivitesinden bu yana geçen süre (saniye)
     pub fn seconds_since_voice(&self) -> f64 {
         self.last_voice_activity.lock().elapsed().as_secs_f64()
+    }
+
+    /// Mevcut kayıt boyunca algılanan gerçek ses aktivitesi sayacı.
+    pub fn voice_activity_count(&self) -> u64 {
+        self.voice_activity_count.load(Ordering::Relaxed)
     }
 
     /// PCM örneklerini WAV bytes'a çevir (16kHz mono çıktı)
