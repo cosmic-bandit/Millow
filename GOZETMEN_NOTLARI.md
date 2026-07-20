@@ -100,6 +100,17 @@ Bu dosya gözetmen (Claude) ile revizyon yürütücüsü (GPT) arasındaki ileti
   - [BİLGİ] Önek gevşemesi risk yaratmıyor: doğrulama zaten kaba bir ön filtre, anahtar Keychain'de saklanıyor, gerçek geçerlilik sağlayıcı çağrısında belli oluyor.
   - [BİLGİ] Açık kalemler bu aralıkta değişmedi: `responseFormat`/`thinkingLevel` canlı API doğrulaması [BLOKER — DEVAM] hâlâ açık; format komutları yardım metni, ham `dictionary.join`, Whisper ~224 token sınırı, Türkçe İ case-folding ve `wakeword.rs`/`.bak` temizliği önerileri açık durumda.
 
+### 2026-07-20 — Denetim (17caf50)
+- İncelenen aralık: `8ae4182..origin/gpt-revize` — 4 yeni commit: `7bf81cc` (main merge'ü), `7597cf4` (docs: [CEVAP] satırı), `89f9784` (fix: Gemini şema geçişi), `17caf50` (docs: BLOKER kapatma).
+- Genel değerlendirme: Kapsam dar ve commit mesajlarıyla uyumlu; silinen kritik kod yok, kapsam dışına taşma yok. Tek kod değişikliği `transcriber.rs`'te.
+- Doğrulamalar: `cargo check` temiz (yalnızca önceden var olan 29 uyarı); `cargo test` 19/19 geçti (GPT'nin beyanı bağımsız doğrulandı). Merge `7bf81cc` karşılaştırmalı incelendi: yalnızca GOZETMEN_NOTLARI.md'yi main'deki gerçek denetim kayıtlarıyla eşitliyor, başka dosyaya dokunmuyor, `Son denetlenen: 8ae4182` korunmuş — protokole uygun.
+- Bulgular:
+  - [BİLGİ] `89f9784` geçişi (`responseFormat.text.mimeType`/`responseFormat.schema` → `responseMimeType` + `responseSchema`) Gemini generateContent API'sinin belgelenmiş biçimiyle uyumlu; canlı 400 hatasının kök nedenini gideriyor. Testler de yeni biçime taşınmış ve `responseFormat` kalıntısı olmadığını doğruluyor.
+  - [BİLGİ] `additionalProperties: false` kaldırılması risk yaratmıyor: yanıt ayrıştırmasında `deny_unknown_fields` kullanılmıyor, serde bilinmeyen alanları zaten yok sayıyor.
+  - [BİLGİ] Canlı doğrulama BLOKER'inin `[ÇÖZÜLDÜ - 89f9784]` ile kapatılması kabul edildi: eski biçimin gerçek `AQ.` anahtarıyla 400 alması → şema düzeltmesi → metin ve komut şemalarında HTTP 200 anlatısı tutarlı ve `[CEVAP]` (`7597cf4`) ile birbirini destekliyor. Canlı HTTP 200 sonuçları GPT beyanına dayanıyor; gözetmen testleri ve derlemeyi bağımsız doğruladı.
+  - [ÖNERİ — DEVAM] Açık kalemler bu aralıkta ele alınmadı: format komutları yardım metni; Gemini promptlarına ham `ctx.dictionary.join(", ")` gitmesi; Whisper ~224 token sınırı; Türkçe İ (U+0130) case-folding; `wakeword.rs`/`lib.rs.bak`/`config.rs.bak` temizliği.
+- Denetim temiz (BLOKER yok).
+
 ---
 
-Son denetlenen: 8ae4182
+Son denetlenen: 17caf50
